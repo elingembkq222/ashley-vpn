@@ -4,6 +4,8 @@ umask 022
 
 root=${0:A:h}
 source "$root/src/check-globalprotect.sh"
+target='/Applications/Ashley VPN.app'
+domain='com.ashley.vpn.companion'
 
 if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != --check ]]; }; then
   print -u2 -- '用法：./install.sh [--check]'
@@ -14,6 +16,26 @@ fail_check() {
   print -ru2 -- "[失败] $1"
   print -ru2 -- '安装已停止。'
   exit 1
+}
+
+check_existing_installation() {
+  installed_version=''
+  if [[ -L "$target" ]] || { [[ -e "$target" ]] &&
+     [[ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$target/Contents/Info.plist" 2>/dev/null)" != "$domain" ]]; }; then
+    fail_check '「应用程序」目录：安装位置已被同名项目占用，请确认并移走该项目后重试。'
+  fi
+  if [[ -d "$target" && "${1:-}" != --check ]]; then
+    local installed_build
+    installed_version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$target/Contents/Info.plist" 2>/dev/null) ||
+      installed_version='未知版本'
+    installed_build=$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$target/Contents/Info.plist" 2>/dev/null) ||
+      installed_build=''
+    if [[ "$installed_version" == "$latest_version" && "$installed_build" == "$latest_build" &&
+          -x "$target/Contents/MacOS/ashley-vpn-menu" ]]; then
+      print -r -- "Ashley VPN $latest_version 已是最新版，无需重装。"
+      exit 0
+    fi
+  fi
 }
 
 print -r -- '正在检查 Ashley VPN 安装条件…'
@@ -27,6 +49,14 @@ if [[ "$major" != <-> ]] || (( major < 12 )); then
 fi
 print -r -- "[通过] 操作系统：macOS $version"
 
+if [[ "${1:-}" != --check ]]; then
+  latest_version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$root/src/Info.plist") ||
+    fail_check '无法读取安装包版本。'
+  latest_build=$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$root/src/Info.plist") ||
+    fail_check '无法读取安装包构建号。'
+fi
+check_existing_installation "${1:-}"
+
 if ! check_globalprotect 2>/dev/null; then
   fail_check '集团 GlobalProtect：客户端未安装或不完整，请通过公司渠道安装后重试。'
 fi
@@ -38,13 +68,8 @@ if ! /usr/bin/xcrun --find swiftc >/dev/null 2>&1 ||
 fi
 print -r -- '[通过] Xcode 命令行工具：Swift 编译器和 macOS SDK 可用'
 
-target='/Applications/Ashley VPN.app'
 if [[ ! -w /Applications ]]; then
   fail_check '「应用程序」目录：当前账号无法写入，请切换到有写入权限的账号后重试。'
-fi
-if [[ -L "$target" ]] || { [[ -e "$target" ]] &&
-   [[ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$target/Contents/Info.plist" 2>/dev/null)" != com.ashley.vpn.companion ]]; }; then
-  fail_check '「应用程序」目录：安装位置已被同名项目占用，请确认并移走该项目后重试。'
 fi
 print -r -- '[通过] 「应用程序」目录：可写入，安装位置可用'
 print -r -- '全部安装条件已通过。'
@@ -53,15 +78,33 @@ if [[ "${1:-}" == --check ]]; then
 fi
 
 state="$HOME/Library/Application Support/Ashley VPN"
+if [[ -L "$state" || -L "$state/operation.lock" ]]; then
+  fail_check 'Ashley VPN 数据位置指向其他路径。'
+fi
 (umask 077; /bin/mkdir -p "$state"; : >> "$state/operation.lock")
 zmodload zsh/system
 if ! zsystem flock -t 0 -f install_fd "$state/operation.lock" 2>/dev/null; then
   print -u2 -- 'Ashley VPN 正在连接或关闭，请等终端操作结束后重试安装。'
   exit 1
 fi
+check_existing_installation
+if [[ -n "$installed_version" ]]; then
+  print -r -- "检测到 Ashley VPN $installed_version，将准备 $latest_version 并移除旧安装。"
+fi
 
 stage=$(/usr/bin/mktemp -d /Applications/.ashley-vpn.install.XXXXXX)
-trap 'if [[ ! -e "$stage/previous.app" || -e "$target" ]]; then /bin/rm -R -- "$stage"; fi' EXIT
+cleanup_install() {
+  if [[ -d "$stage/previous.app" && ! -e "$target" && ! -L "$target" ]]; then
+    if /bin/mv "$stage/previous.app" "$target"; then
+      print -ru2 -- '已恢复此前的 Ashley VPN。'
+    else
+      print -ru2 -- "无法恢复此前的 Ashley VPN，旧应用保留在 $stage/previous.app。"
+      return
+    fi
+  fi
+  /bin/rm -R -- "$stage"
+}
+trap cleanup_install EXIT
 app="$stage/Ashley VPN.app"
 resources="$app/Contents/Resources"
 /bin/mkdir -p "$resources" "$app/Contents/MacOS"
@@ -94,15 +137,35 @@ run_build_step '签名 Ashley VPN 失败' /usr/bin/codesign --force --deep --sig
 run_build_step '验证 Ashley VPN 签名失败' /usr/bin/codesign --verify --deep --strict "$app"
 /bin/zsh -f "$root/src/install-cli.zsh"
 
-# Replace only the menu app. An ongoing VPN tunnel stays with GlobalProtect.
+# Uninstall the old bundle only after the new one is ready.
 if [[ -d "$target" ]]; then
-  /usr/bin/pkill -u "$(/usr/bin/id -u)" -x ashley-vpn-menu || true
+  print -r -- '正在移除旧版 Ashley VPN…'
+  process='^/Applications/Ashley VPN\.app/Contents/MacOS/ashley-vpn-menu$'
+  /usr/bin/pkill -TERM -u "$EUID" -f "$process" || true
+  for attempt in {1..20}; do
+    /usr/bin/pgrep -u "$EUID" -f "$process" >/dev/null || break
+    /bin/sleep 0.1
+  done
+  if /usr/bin/pgrep -u "$EUID" -f "$process" >/dev/null; then
+    fail_check '旧版 Ashley VPN 尚未退出，请退出后重试。'
+  fi
   /bin/mv "$target" "$stage/previous.app"
 fi
 if ! /bin/mv "$app" "$target"; then
-  [[ ! -d "$stage/previous.app" ]] || /bin/mv "$stage/previous.app" "$target"
-  print -u2 -- '安装失败，已尝试恢复此前的应用。'
+  print -ru2 -- '[失败] 无法将 Ashley VPN 安装到「应用程序」目录。'
   exit 1
+fi
+
+if [[ -d "$stage/previous.app" ]]; then
+  for file in operation.owner connected-installation home-wifi-profile; do
+    if [[ -f "$state/$file" || -L "$state/$file" ]]; then
+      /bin/rm -- "$state/$file" || print -ru2 -- '部分旧安装状态未能删除。'
+    fi
+  done
+  if /usr/bin/defaults read "$domain" >/dev/null 2>&1 &&
+     ! /usr/bin/defaults delete "$domain"; then
+    print -ru2 -- '旧版本应用设置未能删除。'
+  fi
 fi
 
 previous_keychain="$stage/previous.app/Contents/Resources/wifi-keychain"
@@ -115,4 +178,4 @@ if [[ -x "$previous_keychain" ]]; then
   done
 fi
 
-print -r -- 'Ashley VPN 已安装。打开新的终端窗口，运行 ashleyvpn 启动菜单栏图标。'
+print -r -- "Ashley VPN 已安装（$latest_version）。打开新的终端窗口，运行 ashleyvpn 启动菜单栏图标。"
