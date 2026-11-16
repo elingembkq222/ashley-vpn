@@ -302,6 +302,25 @@ _gp-net-system-vpn-connected() {
   '
 }
 
+gp-check-connect-network() {
+  emulate -L zsh
+  local gpInterface
+  if ! _gp-net-wired-ready || ! _gp-net-system-vpn-connected; then
+    return 0
+  fi
+  for gpInterface in ${(f)"$(_gp-net-interfaces wifi)"}; do
+    if _gp-net-interface-active "$gpInterface"; then
+      return 0
+    fi
+  done
+  print -ru2 -- '当前仅有线网络已连接，且 macOS 系统 VPN 正在运行。'
+  print -ru2 -- '请在「系统设置 → VPN」手动关闭系统 VPN，再重新开启集团 VPN。'
+  if [[ -t 2 ]]; then
+    /bin/sleep 12
+  fi
+  return 1
+}
+
 gp-disconnect() {
   emulate -L zsh
   gp-stop || return

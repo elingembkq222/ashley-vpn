@@ -19,6 +19,7 @@ vpn_state() {
 }
 
 connect_vpn() {
+  gp-check-connect-network || return
   local installation_id last_connected=''
   if ! IFS= read -r installation_id < "$ASHLEY_VPN_RESOURCES/installation-id" ||
      [[ -z "$installation_id" ]]; then
