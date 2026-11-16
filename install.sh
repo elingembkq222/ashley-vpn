@@ -49,9 +49,9 @@ app="$stage/Ashley VPN.app"
 resources="$app/Contents/Resources"
 /bin/mkdir -p "$resources" "$app/Contents/MacOS"
 /bin/cp "$root/src/Info.plist" "$app/Contents/Info.plist"
-/bin/cp "$root/src/"{connect.command,disconnect.command,run-vpn.zsh,check-globalprotect.sh,globalprotect-control.zsh,setup-stop-authorization.sh} "$resources/"
-/bin/cp "$root/src/assets/"{AppIcon.icns,MenuIcon.png,MenuIcon@2x.png} "$resources/"
-/bin/chmod 755 "$resources/connect.command" "$resources/disconnect.command"
+/bin/cp "$root/src/"{connect.command,disconnect.command,toggle.command,run-vpn.zsh,check-globalprotect.sh,globalprotect-control.zsh,setup-stop-authorization.sh} "$resources/"
+/bin/cp "$root/src/assets/"{AppIcon.icns,MenuIcon.png,MenuIcon@2x.png,MenuIconDisabled.png,MenuIconDisabled@2x.png,FloatingIcon.png,FloatingIconDisabled.png} "$resources/"
+/bin/chmod 755 "$resources/"{connect,disconnect,toggle}.command
 /usr/bin/uuidgen > "$resources/installation-id"
 
 print -r -- '正在构建 Ashley VPN…'
