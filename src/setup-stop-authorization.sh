@@ -1,5 +1,5 @@
 #!/bin/sh
-# Authorize and stop only the GlobalProtect system job in the same sudo invocation.
+# Stop the GlobalProtect system job after sudo authorization, then try to save the narrow grant.
 set -eu
 
 case "${1-}" in
@@ -39,19 +39,7 @@ fi
 dir=/private/etc/sudoers.d
 target="$dir/ashley-vpn-stop"
 binary='/Applications/Ashley VPN.app/Contents/MacOS/ashley-vpn-menu'
-if ! /usr/sbin/visudo -c -q; then
-  echo "无法验证当前 sudo 配置，请联系 IT 核对公司电脑的管理员权限策略。" >&2
-  exit 1
-fi
-if ! /usr/bin/grep -Eq '^[[:space:]]*[@#]includedir[[:space:]]+(/private)?/etc/sudoers\.d([[:space:]]|$)' /private/etc/sudoers; then
-  echo "当前 sudo 配置未启用独立授权目录，请联系 IT 核对管理员权限策略。" >&2
-  exit 1
-fi
-if [ ! -d "$dir" ] || [ -L "$dir" ]; then
-  echo "无法访问系统授权目录 $dir，请联系 IT 核对系统配置。" >&2
-  exit 1
-fi
-if [ ! -f "$binary" ] || [ -L "$binary" ] || [ -L "$helper" ]; then
+if [ ! -f "$binary" ] || [ -L "$binary" ]; then
   echo "无法验证当前 Ashley VPN 安装，请重新安装后重试。" >&2
   exit 1
 fi
@@ -62,6 +50,27 @@ if ! printf '%s\n' "$identity $checksum" | /usr/bin/grep -Eq '^[0-9]+:[0-9]+:[0-
   exit 1
 fi
 
+echo '管理员验证完成，正在停止 GlobalProtect 系统服务…'
+system_job=system/com.paloaltonetworks.gp.pangpsd
+/bin/launchctl disable "$system_job"
+if /bin/launchctl print "$system_job" >/dev/null 2>&1; then
+  if ! /bin/launchctl bootout "$system_job" && /bin/launchctl print "$system_job" >/dev/null 2>&1; then
+    echo '无法卸载 GlobalProtect 系统服务。' >&2
+    exit 1
+  fi
+fi
+
+if ! /usr/sbin/visudo -c -q ||
+   ! /usr/bin/grep -Eq '^[[:space:]]*[@#]includedir[[:space:]]+(/private)?/etc/sudoers\.d([[:space:]]|$)' /private/etc/sudoers ||
+   [ ! -d "$dir" ] || [ -L "$dir" ] || [ -L "$helper" ]; then
+  echo '本次停止已执行。当前 sudo 配置无法保存免密授权，下次需要停止系统服务时会再次验证。'
+  exit 0
+fi
+
+# A failure saving authorization must not prevent the caller from completing shutdown.
+set +e
+(
+set -e
 umask 077
 stage=$(/usr/bin/mktemp -d /private/etc/.ashley-vpn-stop.XXXXXX)
 trap 'for file in rule helper; do
@@ -99,20 +108,20 @@ HELPER
 /bin/chmod 0555 "$stage/helper"
 /bin/sh -n "$stage/helper"
 
-/bin/mv -f "$stage/rule" "$target"
-if ! /usr/sbin/visudo -c -q; then
-  /bin/rm -- "$target"
-  echo "Installed rule did not pass validation and was removed." >&2
-  exit 1
-fi
 /bin/mv -f "$stage/helper" "$helper"
-
-echo '管理员验证完成，正在停止 GlobalProtect 系统服务…'
-system_job=system/com.paloaltonetworks.gp.pangpsd
-"$helper" disable
-if /bin/launchctl print "$system_job" >/dev/null 2>&1; then
-  if ! "$helper" bootout && /bin/launchctl print "$system_job" >/dev/null 2>&1; then
-    echo '无法卸载 GlobalProtect 系统服务。' >&2
+if [ ! -e "$target" ]; then
+  /bin/mv "$stage/rule" "$target"
+  if ! /usr/sbin/visudo -c -q; then
+    /bin/rm -- "$target"
+    echo 'Ashley VPN 的免密规则未通过检查，已移除该规则。' >&2
     exit 1
   fi
+fi
+)
+save_status=$?
+set -e
+if [ "$save_status" -eq 0 ]; then
+  echo '已保存本次安装的停止授权。'
+else
+  echo '本次停止已执行，但未能保存免密授权。下次需要停止系统服务时会再次验证。'
 fi

@@ -135,7 +135,7 @@ _gp-stop-system-service() {
     return 1
   fi
 
-  print -r -- '本次安装首次关闭需验证一次本机密码，验证后将直接停止 GlobalProtect 系统服务。'
+  print -r -- '停止 GlobalProtect 系统服务需要管理员验证，验证后将执行本次关闭。'
   if /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller"; then
     return 0
   fi
