@@ -105,15 +105,20 @@ gp-start() {
   return 1
 }
 
-_gp-authorize-stop() {
+_gp-stop-system-service() {
   emulate -L zsh
-  local gpOutput gpStatus
+  local gpSystemJob="$1" gpOutput gpStatus
   local gpInstaller="$ASHLEY_VPN_RESOURCES/setup-stop-authorization.sh"
   local gpHelper=/private/etc/ashley-vpn-stop
 
   gpOutput=$(LC_ALL=C /usr/bin/sudo -kn -- "$gpHelper" check 2>&1)
   gpStatus=$?
   if (( gpStatus == 0 )); then
+    /usr/bin/sudo -kn -- "$gpHelper" disable || return
+    if /bin/launchctl print "$gpSystemJob" >/dev/null 2>&1; then
+      _gp-progress-run '正在停止 GlobalProtect 系统服务' /usr/bin/sudo -kn -- "$gpHelper" bootout ||
+        ! /bin/launchctl print "$gpSystemJob" >/dev/null 2>&1 || return 1
+    fi
     return 0
   fi
   if (( gpStatus != 77 )) && [[ "$gpOutput" != 'sudo: a password is required' &&
@@ -130,13 +135,11 @@ _gp-authorize-stop() {
     return 1
   fi
 
-  print -r -- '本次安装首次关闭需验证一次本机密码，仅授权停用和卸载此 GlobalProtect 服务。'
-  if /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller" &&
-     LC_ALL=C /usr/bin/sudo -kn -- "$gpHelper" check; then
-    print -r -- '系统服务停止授权已确认。'
+  print -r -- '本次安装首次关闭需验证一次本机密码，验证后将直接停止 GlobalProtect 系统服务。'
+  if /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller"; then
     return 0
   fi
-  print -ru2 -- '停止授权未完成，请查看上方的 sudo 或系统提示。终端将在 12 秒后关闭。'
+  print -ru2 -- '未能完成授权或停止系统服务，请查看上方的提示。终端将在 12 秒后关闭。'
   /bin/sleep 12
   return 1
 }
@@ -174,27 +177,21 @@ gp-stop() {
   if { [[ "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => disabled'* ]] &&
        [[ "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => true'* ]]; } ||
      /bin/launchctl print "$gpSystemJob" >/dev/null 2>&1; then
-    _gp-authorize-stop || return
-    /usr/bin/sudo -kn -- /private/etc/ashley-vpn-stop disable || return
+    _gp-stop-system-service "$gpSystemJob" || return
   fi
   _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangpa" || return
   _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangps" || return
-  local gpTarget gpDomain gpUnloadAttempt gpBootout gpStep
+  local gpTarget gpUnloadAttempt gpBootout gpStep
   for gpTarget in \
     "$gpGui/com.paloaltonetworks.gp.pangpa" \
     "$gpGui/com.paloaltonetworks.gp.pangps" \
     "$gpSystemJob"; do
-    gpDomain="${gpTarget%/*}"
-    if /bin/launchctl print "$gpTarget" >/dev/null 2>&1; then
+    if [[ "$gpTarget" != "$gpSystemJob" ]] && /bin/launchctl print "$gpTarget" >/dev/null 2>&1; then
       case "$gpTarget" in
         */com.paloaltonetworks.gp.pangpa) gpStep='正在退出 GlobalProtect 界面' ;;
         *) gpStep='正在停止 GlobalProtect 服务并断开 VPN' ;;
       esac
-      if [[ "$gpDomain" == system ]]; then
-        _gp-progress-run "$gpStep" /usr/bin/sudo -kn -- /private/etc/ashley-vpn-stop bootout
-      else
-        _gp-progress-run "$gpStep" _gp-launchctl "$gpDomain" bootout "$gpTarget"
-      fi
+      _gp-progress-run "$gpStep" _gp-launchctl "$gpGui" bootout "$gpTarget"
       gpBootout=$?
       if (( gpBootout != 0 )) && /bin/launchctl print "$gpTarget" >/dev/null 2>&1; then
         return "$gpBootout"
@@ -214,7 +211,7 @@ gp-stop() {
   done
   local gpAttempt
   for gpAttempt in {1..5}; do
-    if ! /usr/bin/pgrep -x 'PanGPS|GlobalProtect' >/dev/null; then
+    if _gp-already-stopped; then
       print -- '关闭完成：VPN 已断开，GlobalProtect 已停止。'
       return 0
     fi
