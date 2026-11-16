@@ -119,6 +119,10 @@ _gp-authorize-stop() {
   if (( gpStatus != 77 )) && [[ "$gpOutput" != 'sudo: a password is required' &&
       "$gpOutput" != "sudo: $gpHelper: command not found" ]]; then
     print -ru2 -- "$gpOutput"
+    if [[ -t 2 ]]; then
+      print -ru2 -- '无法检查停止授权。终端将在 12 秒后关闭。'
+      /bin/sleep 12
+    fi
     return "$gpStatus"
   fi
   if [[ ! -t 0 || ! -t 2 || ! -r "$gpInstaller" ]]; then
@@ -127,8 +131,14 @@ _gp-authorize-stop() {
   fi
 
   print -r -- '本次安装首次关闭需验证一次本机密码，仅授权停用和卸载此 GlobalProtect 服务。'
-  /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller" || return
-  LC_ALL=C /usr/bin/sudo -kn -- "$gpHelper" check
+  if /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller" &&
+     LC_ALL=C /usr/bin/sudo -kn -- "$gpHelper" check; then
+    print -r -- '系统服务停止授权已确认。'
+    return 0
+  fi
+  print -ru2 -- '停止授权未完成，请查看上方的 sudo 或系统提示。终端将在 12 秒后关闭。'
+  /bin/sleep 12
+  return 1
 }
 
 _gp-already-stopped() {

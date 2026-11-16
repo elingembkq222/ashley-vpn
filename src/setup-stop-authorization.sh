@@ -39,13 +39,20 @@ fi
 dir=/private/etc/sudoers.d
 target="$dir/ashley-vpn-stop"
 binary='/Applications/Ashley VPN.app/Contents/MacOS/ashley-vpn-menu'
-/usr/sbin/visudo -c -q
+if ! /usr/sbin/visudo -c -q; then
+  echo "无法验证当前 sudo 配置，请联系 IT 核对公司电脑的管理员权限策略。" >&2
+  exit 1
+fi
 if ! /usr/bin/grep -Eq '^[[:space:]]*[@#]includedir[[:space:]]+(/private)?/etc/sudoers\.d([[:space:]]|$)' /private/etc/sudoers; then
-  echo "The system sudoers configuration does not include /etc/sudoers.d." >&2
+  echo "当前 sudo 配置未启用独立授权目录，请联系 IT 核对管理员权限策略。" >&2
+  exit 1
+fi
+if [ ! -d "$dir" ] || [ -L "$dir" ]; then
+  echo "无法访问系统授权目录 $dir，请联系 IT 核对系统配置。" >&2
   exit 1
 fi
 if [ ! -f "$binary" ] || [ -L "$binary" ] || [ -L "$helper" ]; then
-  echo "Cannot identify the installed Black Cat Assistant." >&2
+  echo "无法验证当前 Ashley VPN 安装，请重新安装后重试。" >&2
   exit 1
 fi
 identity=$(/usr/bin/stat -f '%d:%i:%B' "$binary")
@@ -67,7 +74,7 @@ rule > "$stage/rule"
 /usr/sbin/visudo -c -q -f "$stage/rule"
 
 if [ -L "$target" ] || { [ -e "$target" ] && ! /usr/bin/cmp -s "$stage/rule" "$target"; }; then
-  echo "A different rule already exists at $target. No changes made." >&2
+  echo "Ashley VPN 的系统授权规则与当前账户不匹配，请联系 IT 核对 $target。" >&2
   exit 1
 fi
 
@@ -99,4 +106,3 @@ if ! /usr/sbin/visudo -c -q; then
   exit 1
 fi
 /bin/mv -f "$stage/helper" "$helper"
-echo "Authorized stopping GlobalProtect for this installation. No password is stored."
