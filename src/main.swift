@@ -8,8 +8,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.item = item
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: "Ashley VPN")
-            button.image?.isTemplate = true
+            button.image = menuIcon()
             button.imagePosition = .imageLeading
             button.title = "Ashley VPN"
         }
@@ -20,6 +19,26 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         addItem("退出 Ashley VPN 图标", action: #selector(quit), to: menu)
         item.menu = menu
+    }
+
+    private func menuIcon() -> NSImage? {
+        let size = NSSize(width: 20, height: 20)
+        let image = NSImage(size: size)
+        for resource in ["MenuIcon", "MenuIcon@2x"] {
+            if let url = Bundle.main.url(forResource: resource, withExtension: "png"),
+               let data = try? Data(contentsOf: url),
+               let representation = NSBitmapImageRep(data: data) {
+                representation.size = size
+                image.addRepresentation(representation)
+            }
+        }
+        if image.representations.isEmpty {
+            let fallback = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: "Ashley VPN")
+            fallback?.isTemplate = true
+            return fallback
+        }
+        image.accessibilityDescription = "Ashley VPN"
+        return image
     }
 
     private func addItem(_ title: String, action: Selector, to menu: NSMenu) {
