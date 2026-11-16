@@ -355,17 +355,9 @@ _gp-wifi-join() {
 
 _gp-wifi-join-retry() {
   emulate -L zsh
-  local gpInput='' gpTry gpStatus
-  # Retain input only within this function so a transient failure can retry it.
-  if [[ "$2" == '-' ]]; then
-    IFS= read -r gpInput || return 2
-  fi
+  local gpTry gpStatus
   for gpTry in 1 2 3; do
-    if [[ "$2" == '-' ]]; then
-      print -r -- "$gpInput" | _gp-wifi-join "$@"
-    else
-      _gp-wifi-join "$@"
-    fi
+    _gp-wifi-join "$@"
     gpStatus=$?
     (( gpStatus == 3 && gpTry < 3 )) || return "$gpStatus"
     print -u2 -- "正在重试连接 $1（第 $((gpTry + 1)) 次）…"
@@ -418,16 +410,23 @@ wifi-switch() {
     print -u2 -- "$gpSsid 需要 Wi-Fi 密码。请在终端运行 wifi-switch $gpSsid，连接成功后会记住密码。"
     return 1
   fi
-  if ! IFS= read -rs "gpPassword?请输入 $gpSsid 的 Wi-Fi 密码（输入时不显示，直接回车取消）："; then
+  while true; do
+    gpPassword=''
+    if ! IFS= read -rs "gpPassword?请输入 $gpSsid 的 Wi-Fi 密码（输入时不显示，直接回车取消）："; then
+      print -ru2 -- ''
+      return 1
+    fi
     print -ru2 -- ''
-    return 1
-  fi
-  print -ru2 -- ''
-  [[ -n "$gpPassword" ]] || return 1
-  if ! print -r -- "$gpPassword" | _gp-progress-run "正在验证 Wi-Fi 密码并加入 $gpSsid" _gp-wifi-join-retry "$gpSsid" -; then
-    print -u2 -- "未能加入 $gpSsid，请确认网络可用和密码正确。"
-    return 1
-  fi
+    [[ -n "$gpPassword" ]] || return 1
+    gpStatus=0
+    print -r -- "$gpPassword" | _gp-progress-run "正在验证 Wi-Fi 密码并加入 $gpSsid" _gp-wifi-join "$gpSsid" - || gpStatus=$?
+    (( gpStatus == 0 )) && break
+    case "$gpStatus" in
+      2) print -ru2 -- "Wi-Fi 密码验证失败，请重新输入。" ;;
+      3) print -ru2 -- "连接 $gpSsid 超时或尚未就绪，请核对密码后重新输入。" ;;
+      *) print -ru2 -- "未能加入 $gpSsid，请确认网络可用后重新输入密码。" ;;
+    esac
+  done
   print -r -- "已加入 $gpSsid。"
   if ! print -rn -- "$gpPassword" | "$gpKeychain" save "$gpSsid"; then
     print -u2 -- 'Wi-Fi 已连接，但密码未能保存到本机钥匙串。'
