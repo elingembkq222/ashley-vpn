@@ -86,13 +86,13 @@ case "$1" in
     if [[ "$(vpn_state)" == stopped ]]; then
       gp-connect
     else
-      gp-stop && wifi-switch "$GP_HOME_WIFI"
+      gp-disconnect
     fi
     ;;
   connect)
     gp-connect
     ;;
   disconnect)
-    gp-stop && wifi-switch "$GP_HOME_WIFI"
+    gp-disconnect
     ;;
 esac

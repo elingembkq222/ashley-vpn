@@ -260,11 +260,55 @@ gp-status() {
 }
 
 # --- 自动切换网络(2026-11-16 新增) ---
-# officewifi(小写):连接集团 VPN 时所在的网络;OfficeWiFi(大写):VPN 断开后自动切回的日常网络。
+# officewifi 用于连接集团 VPN，OfficeWiFi 是断开后可选的日常网络。
 
 GP_VPN_WIFI='officewifi'
 GP_HOME_WIFI='OfficeWiFi'
 GP_WIFI_IFACE='en0'
+
+_gp-net-wired-ready() {
+  emulate -L zsh
+  local gpPorts gpRoutes gpInterface
+  gpPorts=$(LC_ALL=C /usr/sbin/networksetup -listallhardwareports 2>/dev/null | /usr/bin/awk '
+    /^Hardware Port: / { wifi = ($0 ~ /^Hardware Port: (Wi-Fi|AirPort)$/) }
+    /^Device: en[0-9]+$/ && !wifi { print $2 }
+  ')
+  [[ -n "$gpPorts" ]] || return 1
+  gpRoutes=$(LC_ALL=C /usr/sbin/netstat -rn 2>/dev/null) || return 1
+  for gpInterface in ${(f)gpPorts}; do
+    if /usr/bin/awk -v dev="$gpInterface" '
+         $1 == "default" && $3 ~ /^U.*G/ && $4 == dev { found = 1 }
+         END { exit !found }
+       ' <<< "$gpRoutes" &&
+       LC_ALL=C /sbin/ifconfig "$gpInterface" 2>/dev/null | /usr/bin/grep -q '^[[:space:]]*status: active$'; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+gp-disconnect() {
+  emulate -L zsh
+  gp-stop || return
+  if _gp-net-wired-ready; then
+    print -r -- '检测到有线网络，保留当前网络设置。'
+  elif [[ "$(gp-net-current-ssid)" == "$GP_HOME_WIFI" ]]; then
+    print -r -- "当前已在 $GP_HOME_WIFI。"
+  elif [[ -r "$ASHLEY_VPN_STATE/home-wifi-profile" ]] ||
+       LC_ALL=C /usr/sbin/networksetup -listpreferredwirelessnetworks "$GP_WIFI_IFACE" 2>/dev/null |
+         /usr/bin/awk -v ssid="$GP_HOME_WIFI" '
+           { sub(/^[[:space:]]+/, "") }
+           $0 == ssid { found = 1 }
+           END { exit !found }
+         '; then
+    if ! wifi-switch "$GP_HOME_WIFI"; then
+      print -ru2 -- "VPN 已关闭，未切换到 $GP_HOME_WIFI。"
+    fi
+  else
+    print -r -- "这台 Mac 未配置 $GP_HOME_WIFI，保留当前网络设置。"
+  fi
+  return 0
+}
 
 _gp-net-active-profile() {
   emulate -L zsh
