@@ -1,0 +1,9 @@
+#!/bin/sh
+# Ashley VPN launcher
+set -eu
+app='/Applications/Ashley VPN.app'
+if [ ! -x "$app/Contents/MacOS/ashley-vpn-menu" ]; then
+    printf '%s\n' 'Ashley VPN 尚未安装。请运行项目 README 中的安装命令。' >&2
+    exit 1
+fi
+exec /usr/bin/open -g "$app"
