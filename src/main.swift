@@ -3,22 +3,40 @@ import AppKit
 @MainActor
 final class AshleyVPN: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem?
+    private var orb: FloatingOrb?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.item = item
         if let button = item.button {
             button.image = menuIcon()
-            button.imagePosition = .imageLeading
-            button.title = "Ashley VPN"
+            button.imagePosition = .imageOnly
+            button.toolTip = "Ashley VPN"
         }
 
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let image = NSImage(contentsOf: url) {
+            let orb = FloatingOrb(image: image) { [weak self] in self?.makeMenu() ?? NSMenu() }
+            self.orb = orb
+            orb.show()
+        }
+        item.menu = makeMenu()
+    }
+
+    func applicationDidChangeScreenParameters(_ notification: Notification) {
+        orb?.recoverOffscreenPosition()
+    }
+
+    private func makeMenu() -> NSMenu {
         let menu = NSMenu()
         addItem("开启 VPN", action: #selector(connect), to: menu)
         addItem("关闭 VPN", action: #selector(disconnect), to: menu)
         menu.addItem(.separator())
+        if let orb {
+            addItem(orb.isVisible ? "隐藏桌面图标" : "显示桌面图标", action: #selector(toggleOrb), to: menu)
+        }
         addItem("退出 Ashley VPN 图标", action: #selector(quit), to: menu)
-        item.menu = menu
+        return menu
     }
 
     private func menuIcon() -> NSImage? {
@@ -50,6 +68,11 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     @objc private func connect() { run("connect") }
     @objc private func disconnect() { run("disconnect") }
     @objc private func quit() { NSApp.terminate(nil) }
+    @objc private func toggleOrb() {
+        guard let orb else { return }
+        if orb.isVisible { orb.hide() } else { orb.show() }
+        item?.menu = makeMenu()
+    }
 
     private func run(_ action: String) {
         guard let command = Bundle.main.url(forResource: action, withExtension: "command") else {
