@@ -12,7 +12,9 @@ Ashley VPN 是独立的 macOS 菜单栏应用。它通过本机已有的公司 G
 curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | bash
 ```
 
-终端会依次显示 macOS 版本、GlobalProtect、Xcode 命令行工具和「应用程序」目录的检查结果。遇到第一项失败会停止安装，并显示处理方法。看到「Ashley VPN 已安装」后，即可打开新终端启动。安装脚本将 `ashleyvpn` 放到 `~/.local/bin`，并为新的 zsh 或 Bash 终端配置 PATH。
+安装命令会检查本机版本。版本一致时提示「已是最新版，无需重装」。版本不同时，先构建并验证新版，再自动移除旧应用并安装新版。
+
+需要安装时，终端会显示 macOS 版本、GlobalProtect、Xcode 命令行工具和「应用程序」目录的检查结果。遇到第一项失败会停止安装，并显示处理方法。看到「Ashley VPN 已安装」后，即可打开新终端启动。安装脚本将 `ashleyvpn` 放到 `~/.local/bin`，并为新的 zsh 或 Bash 终端配置 PATH。
 
 ## 一条命令启动
 
@@ -32,7 +34,7 @@ ashleyvpn
 
 仅连接有线网络且 macOS 系统 VPN 已连接时，开启集团 VPN 会提示先在「系统设置 → VPN」手动关闭系统 VPN，再重试。
 
-Ashley VPN 在钥匙串中为两个 Wi-Fi 分别保存连接成功的凭据。每次运行安装脚本都会生成新的安装 ID，新安装不会使用前一次安装的 Wi-Fi 记录。macOS 只记住停止指定 GlobalProtect 服务的授权，不会让应用读取或保存本机管理员密码。升级或重装后，旧授权失效。
+Ashley VPN 在钥匙串中为两个 Wi-Fi 分别保存连接成功的凭据。首次安装或升级时会生成新的安装 ID。升级后会清理旧版本保存的 Wi-Fi 凭据和设置，并使旧停止授权失效。macOS 只记住停止指定 GlobalProtect 服务的授权，不会让应用读取或保存本机管理员密码。
 
 ## 卸载
 
