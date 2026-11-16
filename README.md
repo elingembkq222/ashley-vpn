@@ -16,6 +16,12 @@ curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/boot
 
 需要安装时，终端会显示 macOS 版本、GlobalProtect、Xcode 命令行工具和「应用程序」目录的检查结果。遇到第一项失败会停止安装，并显示处理方法。看到「Ashley VPN 已安装」后，即可打开新终端启动。安装脚本将 `ashleyvpn` 放到 `~/.local/bin`，并为新的 zsh 或 Bash 终端配置 PATH。
 
+安装或升级后会检查系统钥匙串中的集团 VPN 客户端证书。证书匹配且签名权限缺失时，终端会提示管理员验证，然后只为 GlobalProtect 和 PanGPS 补齐签名权限。权限齐全、证书缺失或匹配到多张证书时会跳过。需要重试权限修复时，可以单独运行：
+
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | bash -s -- --repair-keychain
+```
+
 ## 一条命令启动
 
 打开新的终端窗口，运行：
