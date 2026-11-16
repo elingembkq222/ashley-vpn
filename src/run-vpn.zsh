@@ -31,14 +31,7 @@ connect_vpn() {
     gp-connect
     return
   fi
-  if ! _gp-already-stopped; then
-    print -r -- '首次连接前检测到 GlobalProtect 正在运行，正在关闭现有服务…'
-    if ! gp-stop; then
-      print -ru2 -- '未确认 GlobalProtect 已停止，已取消本次连接。'
-      return 1
-    fi
-  fi
-  gp-connect || return
+  gp-connect reset || return
   if ! print -r -- "$installation_id" > "$ASHLEY_VPN_STATE/connected-installation"; then
     print -ru2 -- 'VPN 已连接，但未能记录本次安装已完成首次连接。'
   fi

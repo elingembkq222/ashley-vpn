@@ -2,11 +2,20 @@ import Foundation
 import Security
 
 private let args = CommandLine.arguments
-guard args.count >= 3, ["join", "save", "forget"].contains(args[1]),
-      args.count == 3 || (args[1] == "join" && args.count == 4),
-      ["officewifi", "OfficeWiFi"].contains(args[2]) else {
-    exit(2)
+private func supportedSSID(_ name: String) -> Bool {
+    !name.isEmpty && name.utf8.count <= 32 && name.rangeOfCharacter(from: .controlCharacters) == nil
 }
+
+guard args.count >= 2 else { exit(2) }
+let action = args[1]
+if action == "forget-all" {
+    guard args.count == 2 else { exit(2) }
+} else {
+    guard ["join", "save", "forget"].contains(action),
+          args.count == 3 || (action == "join" && args.count == 4),
+          supportedSSID(args[2]) else { exit(2) }
+}
+
 let directory = URL(fileURLWithPath: args[0]).resolvingSymlinksInPath().deletingLastPathComponent()
 guard let rawID = try? String(contentsOf: directory.appendingPathComponent("installation-id"), encoding: .utf8),
       let installationID = UUID(uuidString: rawID.trimmingCharacters(in: .whitespacesAndNewlines)) else {
@@ -18,18 +27,20 @@ let service = "com.ashley.vpn.wifi.\(installationID.uuidString)"
 // the background watcher so a missing grant can be handled in the terminal.
 let noSavedCredential: Int32 = 44
 guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else {
-    exit(args[1] == "join" ? noSavedCredential : 1)
+    exit(action == "join" ? noSavedCredential : 1)
 }
-let query: [String: Any] = [
+var query: [String: Any] = [
     kSecClass as String: kSecClassGenericPassword,
     kSecAttrService as String: service,
-    kSecAttrAccount as String: args[2],
 ]
-if args[1] == "forget" {
+if action != "forget-all" {
+    query[kSecAttrAccount as String] = args[2]
+}
+if action == "forget" || action == "forget-all" {
     let result = SecItemDelete(query as CFDictionary)
     exit(result == errSecSuccess || result == errSecItemNotFound ? 0 : 1)
 }
-if args[1] == "join" {
+if action == "join" {
     let interface = args.count == 4 ? args[3] : "en0"
     guard interface.range(of: "^en[0-9]+$", options: .regularExpression) != nil else { exit(2) }
     var match: CFTypeRef?

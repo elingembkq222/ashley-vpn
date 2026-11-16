@@ -170,7 +170,8 @@ resources="$app/Contents/Resources"
 
 print -r -- '正在构建 Ashley VPN…'
 MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建 Ashley VPN 主程序失败' /usr/bin/xcrun swiftc -parse-as-library -O \
-  "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
+  "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" \
+  "$root/src/WiFiScan.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
 MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建钥匙串组件失败' /usr/bin/xcrun swiftc -O \
   "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
 build_certificate_checker
@@ -211,12 +212,16 @@ fi
 
 previous_keychain="$stage/previous.app/Contents/Resources/wifi-keychain"
 if [[ -x "$previous_keychain" ]]; then
-  for ssid in officewifi OfficeWiFi; do
-    if ! "$previous_keychain" forget "$ssid"; then
-      print -u2 -- '旧安装的钥匙串记录未能删除，新安装仍只会使用自己的记录。'
-      break
-    fi
-  done
+  forget_status=0
+  "$previous_keychain" forget-all || forget_status=$?
+  if (( forget_status == 2 )); then
+    # Older helpers only accepted the two original network names.
+    forget_status=0
+    "$previous_keychain" forget officewifi && "$previous_keychain" forget OfficeWiFi || forget_status=$?
+  fi
+  if (( forget_status != 0 )); then
+    print -u2 -- '旧安装的钥匙串记录未能删除，新安装仍只会使用自己的记录。'
+  fi
 fi
 
 if ! repair_certificate_access; then

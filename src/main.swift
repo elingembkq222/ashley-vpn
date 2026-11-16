@@ -276,6 +276,11 @@ struct Main {
     @MainActor
     static func main() {
         let application = NSApplication.shared
+        let arguments = CommandLine.arguments
+        if arguments.count == 4, arguments[1] == "--scan-wifi" {
+            WiFiScan.run(interfaceName: arguments[2], outputPath: arguments[3])
+            return
+        }
         let delegate = AshleyVPN()
         application.setActivationPolicy(.accessory)
         application.delegate = delegate
