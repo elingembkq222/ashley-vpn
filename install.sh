@@ -46,7 +46,7 @@ repair_certificate_access() {
     return "$check_status"
   fi
   if [[ ! -t 2 ]]; then
-    print -ru2 -- '集团 VPN 证书缺少签名权限，请在交互终端运行安装命令并加 --repair-keychain。'
+    print -ru2 -- '集团 VPN 证书缺少签名权限，请在 macOS 终端重新运行安装命令。'
     return 1
   fi
   print -r -- '集团 VPN 证书缺少签名权限。验证管理员身份后，将补齐 GlobalProtect 和 PanGPS 的签名权限。'
@@ -55,6 +55,7 @@ repair_certificate_access() {
 
 check_existing_installation() {
   installed_version=''
+  installed_current=false
   if [[ -L "$target" ]] || { [[ -e "$target" ]] &&
      [[ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$target/Contents/Info.plist" 2>/dev/null)" != "$domain" ]]; }; then
     fail_check '「应用程序」目录：安装位置已被同名项目占用，请确认并移走该项目后重试。'
@@ -67,10 +68,17 @@ check_existing_installation() {
       installed_build=''
     if [[ "$installed_version" == "$latest_version" && "$installed_build" == "$latest_build" &&
           -x "$target/Contents/MacOS/ashley-vpn-menu" ]]; then
-      print -r -- "Ashley VPN $latest_version 已是最新版，无需重装。"
-      exit 0
+      installed_current=true
     fi
   fi
+}
+
+check_application_directory() {
+  if [[ ! -w /Applications ]]; then
+    fail_check '「应用程序」目录：当前账号无法写入，请切换到有写入权限的账号后重试。'
+  fi
+  print -r -- '[通过] 「应用程序」目录：可写入，安装位置可用'
+  print -r -- '全部安装条件已通过。'
 }
 
 print -r -- '正在检查 Ashley VPN 安装条件…'
@@ -105,20 +113,8 @@ if ! /usr/bin/xcrun --find swiftc >/dev/null 2>&1 ||
 fi
 print -r -- '[通过] Xcode 命令行工具：Swift 编译器和 macOS SDK 可用'
 
-if [[ "${1:-}" == --repair-keychain ]]; then
-  stage=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ashley-vpn-keychain.XXXXXX")
-  trap '/bin/rm -R -- "$stage"' EXIT
-  build_certificate_checker
-  repair_certificate_access
-  exit 0
-fi
-
-if [[ ! -w /Applications ]]; then
-  fail_check '「应用程序」目录：当前账号无法写入，请切换到有写入权限的账号后重试。'
-fi
-print -r -- '[通过] 「应用程序」目录：可写入，安装位置可用'
-print -r -- '全部安装条件已通过。'
 if [[ "${1:-}" == --check ]]; then
+  check_application_directory
   exit 0
 fi
 
@@ -132,7 +128,20 @@ if ! zsystem flock -t 0 -f install_fd "$state/operation.lock" 2>/dev/null; then
   print -u2 -- 'Ashley VPN 正在连接或关闭，请等终端操作结束后重试安装。'
   exit 1
 fi
-check_existing_installation
+if [[ "${1:-}" != --repair-keychain ]]; then
+  check_existing_installation
+  if [[ "$installed_current" == true ]]; then
+    print -r -- "Ashley VPN $latest_version 已是最新版，无需重装。"
+  fi
+fi
+if [[ "${1:-}" == --repair-keychain || "$installed_current" == true ]]; then
+  stage=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ashley-vpn-keychain.XXXXXX")
+  trap '/bin/rm -R -- "$stage"' EXIT
+  build_certificate_checker
+  repair_certificate_access
+  exit 0
+fi
+check_application_directory
 if [[ -n "$installed_version" ]]; then
   print -r -- "检测到 Ashley VPN $installed_version，将准备 $latest_version 并移除旧安装。"
 fi
@@ -211,6 +220,6 @@ if [[ -x "$previous_keychain" ]]; then
 fi
 
 if ! repair_certificate_access; then
-  print -ru2 -- 'Ashley VPN 已安装，集团 VPN 证书权限未修复。可稍后使用 --repair-keychain 重试。'
+  print -ru2 -- 'Ashley VPN 已安装，集团 VPN 证书权限未修复。可在终端重新运行安装命令重试。'
 fi
 print -r -- "Ashley VPN 已安装（$latest_version）。打开新的终端窗口，运行 ashleyvpn 启动菜单栏图标。"
