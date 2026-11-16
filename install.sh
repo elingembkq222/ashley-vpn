@@ -56,7 +56,7 @@ resources="$app/Contents/Resources"
 
 print -r -- '正在构建 Ashley VPN…'
 MACOSX_DEPLOYMENT_TARGET=12.0 /usr/bin/xcrun swiftc -parse-as-library -O \
-  "$root/src/main.swift" "$root/src/FloatingOrb.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
+  "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
 MACOSX_DEPLOYMENT_TARGET=12.0 /usr/bin/xcrun swiftc -O "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
 /usr/bin/codesign --force --deep --sign - "$app"
 /usr/bin/codesign --verify --deep --strict "$app"
