@@ -6,13 +6,13 @@ Ashley VPN 是独立的 macOS 菜单栏应用。它通过本机已有的公司 G
 
 需要 macOS 12 或更新版本、公司 GlobalProtect 客户端、Xcode Command Line Tools，以及能写入「应用程序」目录的账号。缺少 Xcode Command Line Tools 时可先运行 `xcode-select --install`。
 
-在 macOS 终端运行这一条命令即可下载并安装。下载无需 GitHub 登录。
+在 macOS 终端运行以下命令即可下载并安装。下载无需 GitHub 登录。
 
 ```sh
-/usr/bin/curl -q -fsSL --proto '=https' --proto-redir '=https' 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | /bin/bash
+curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | bash
 ```
 
-脚本会先检查 GlobalProtect，缺少时会提示先安装客户端。看到「Ashley VPN 已安装」后，即可打开新终端启动。安装脚本将 `ashleyvpn` 放到 `~/.local/bin`，并为新的 zsh 或 Bash 终端配置 PATH。
+终端会依次显示 macOS 版本、GlobalProtect、Xcode 命令行工具和「应用程序」目录的检查结果。遇到第一项失败会停止安装，并显示处理方法。看到「Ashley VPN 已安装」后，即可打开新终端启动。安装脚本将 `ashleyvpn` 放到 `~/.local/bin`，并为新的 zsh 或 Bash 终端配置 PATH。
 
 ## 一条命令启动
 
@@ -22,7 +22,7 @@ Ashley VPN 是独立的 macOS 菜单栏应用。它通过本机已有的公司 G
 ashleyvpn
 ```
 
-单击顶部菜单栏的爪印可以打开 VPN 菜单。桌面右下角的悬浮爪印可以拖动，单击直接切换 VPN。隧道建立后爪印为橙色，关闭后为灰色，连接或关闭过程中光点会沿外圈移动。此时再点一下桌面爪印会取消本次终端操作，图标随后按实际 VPN 状态显示。可以用菜单栏的「显示桌面图标」恢复已隐藏的悬浮图标。已下载源码时，也可本地运行 `./install.sh`，或以 `./install.sh --check` 只检查 GlobalProtect。
+单击顶部菜单栏的爪印可以打开 VPN 菜单。桌面右下角的悬浮爪印可以拖动，单击直接切换 VPN。隧道建立后爪印为橙色，关闭后为灰色，连接或关闭过程中光点会沿外圈移动。此时再点一下桌面爪印会取消本次终端操作，图标随后按实际 VPN 状态显示。可以用菜单栏的「显示桌面图标」恢复已隐藏的悬浮图标。已下载源码时，也可本地运行 `./install.sh`，或运行 `./install.sh --check` 只检查安装条件。
 
 ## 使用
 

@@ -5,34 +5,51 @@ umask 022
 root=${0:A:h}
 source "$root/src/check-globalprotect.sh"
 
-if [[ "$(/usr/bin/uname -s)" != Darwin ]]; then
-  print -u2 -- 'Ashley VPN 安装脚本仅支持 macOS。'
-  exit 1
-fi
 if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != --check ]]; }; then
   print -u2 -- '用法：./install.sh [--check]'
   exit 2
 fi
 
-check_globalprotect || exit 1
-if [[ "${1:-}" == --check ]]; then
-  print -r -- '已检测到集团 GlobalProtect 客户端。'
-  exit 0
-fi
-if ! /usr/bin/xcrun --find swiftc >/dev/null 2>&1; then
-  print -u2 -- '请先运行 xcode-select --install 安装 Xcode Command Line Tools，再重试。'
+fail_check() {
+  print -ru2 -- "[失败] $1"
+  print -ru2 -- '安装已停止。'
   exit 1
+}
+
+print -r -- '正在检查 Ashley VPN 安装条件…'
+if [[ "$(/usr/bin/uname -s)" != Darwin ]]; then
+  fail_check '操作系统：Ashley VPN 需要 macOS 12 或更新版本。'
 fi
+version=$(/usr/bin/sw_vers -productVersion) || fail_check '操作系统：无法读取 macOS 版本。'
+major=${version%%.*}
+if [[ "$major" != <-> ]] || (( major < 12 )); then
+  fail_check "操作系统：当前为 macOS $version，请升级至 macOS 12 或更新版本。"
+fi
+print -r -- "[通过] 操作系统：macOS $version"
+
+if ! check_globalprotect 2>/dev/null; then
+  fail_check '集团 GlobalProtect：客户端未安装或不完整，请通过公司渠道安装后重试。'
+fi
+print -r -- '[通过] 集团 GlobalProtect：已安装'
+
+if ! /usr/bin/xcrun --find swiftc >/dev/null 2>&1 ||
+   ! /usr/bin/xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1; then
+  fail_check 'Xcode 命令行工具：找不到 Swift 编译器或 macOS SDK，请运行 xcode-select --install 后重试。'
+fi
+print -r -- '[通过] Xcode 命令行工具：Swift 编译器和 macOS SDK 可用'
 
 target='/Applications/Ashley VPN.app'
 if [[ ! -w /Applications ]]; then
-  print -u2 -- '当前账号无法写入「应用程序」目录，请由这台 Mac 的管理员账号运行安装脚本。'
-  exit 1
+  fail_check '「应用程序」目录：当前账号无法写入，请切换到有写入权限的账号后重试。'
 fi
 if [[ -L "$target" ]] || { [[ -e "$target" ]] &&
    [[ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$target/Contents/Info.plist" 2>/dev/null)" != com.ashley.vpn.companion ]]; }; then
-  print -u2 -- '「应用程序」中已有同名但不同的应用，安装已停止。'
-  exit 1
+  fail_check '「应用程序」目录：安装位置已被同名项目占用，请确认并移走该项目后重试。'
+fi
+print -r -- '[通过] 「应用程序」目录：可写入，安装位置可用'
+print -r -- '全部安装条件已通过。'
+if [[ "${1:-}" == --check ]]; then
+  exit 0
 fi
 
 state="$HOME/Library/Application Support/Ashley VPN"
