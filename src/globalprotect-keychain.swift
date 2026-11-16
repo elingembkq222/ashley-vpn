@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import Security
 
@@ -9,6 +10,17 @@ private let components = [
     ("/Applications/GlobalProtect.app", "com.paloaltonetworks.GlobalProtect.client"),
     ("/Applications/GlobalProtect.app/Contents/Resources/PanGPS", "PanGPS"),
 ]
+
+private typealias SigningApplication = (path: String, trusted: SecTrustedApplication)
+private typealias ValidateTrustedApplication = @convention(c) (SecTrustedApplication, UnsafePointer<CChar>) -> OSStatus
+
+// The legacy Keychain API's CopyData returns only a path, not the stored code requirement.
+// Use the Security framework's verifier when available so a stale grant does not pass the check.
+// Swift does not import Darwin's pointer-valued RTLD_DEFAULT macro (-2).
+private let validateTrustedApplication = dlsym(UnsafeMutableRawPointer(bitPattern: -2),
+                                               "SecTrustedApplicationValidateWithPath").map {
+    unsafeBitCast($0, to: ValidateTrustedApplication.self)
+}
 
 private func fingerprint(_ certificate: SecCertificate) -> String {
     SHA256.hash(data: SecCertificateCopyData(certificate) as Data)
@@ -61,21 +73,29 @@ private func signingACLs(_ access: SecAccess) -> [SecACL]? {
     return matching.isEmpty ? nil : matching
 }
 
-private func missingSigningAccess(_ access: SecAccess, applications: [SecTrustedApplication]) -> [SecTrustedApplication]? {
-    guard let acls = signingACLs(access) else { return nil }
-    var authorized = Set<Data>()
+private func missingSigningAccess(_ access: SecAccess, applications: [SigningApplication]) -> [SigningApplication]? {
+    guard let acls = signingACLs(access), let validateTrustedApplication else { return nil }
+    var authorized = Set<String>()
     for acl in acls {
         var list: CFArray?
         var description: CFString?
         var prompt = SecKeychainPromptSelector()
         guard SecACLCopyContents(acl, &list, &description, &prompt) == errSecSuccess else { return nil }
-        guard let list else { return [] }
+        // A rule without an application list does not demonstrate an explicit grant.
+        guard let list, !prompt.contains(.requirePassphase) else { continue }
         guard let trusted = list as? [SecTrustedApplication] else { return nil }
-        authorized.formUnion(trusted.compactMap(trustedData))
+        for app in applications where !authorized.contains(app.path) {
+            let pathData = Data(app.path.utf8) + Data([0])
+            if trusted.contains(where: { stored in
+                trustedData(stored) == pathData && app.path.withCString {
+                    validateTrustedApplication(stored, $0) == errSecSuccess
+                }
+            }) {
+                authorized.insert(app.path)
+            }
+        }
     }
-    let identified = applications.compactMap { app in trustedData(app).map { (app, $0) } }
-    guard identified.count == applications.count else { return nil }
-    return identified.filter { !authorized.contains($0.1) }.map(\.0)
+    return applications.filter { !authorized.contains($0.path) }
 }
 
 private func addSigningAccess(_ access: SecAccess, applications: [SecTrustedApplication]) -> Bool {
@@ -94,7 +114,9 @@ private func report(_ message: String, status: Int32 = 0) -> Int32 {
 }
 
 private func checkGlobalProtectSigning(repairFingerprint: String?) -> Int32 {
-    let apps = components.compactMap { trustedApplication($0.0, identifier: $0.1) }
+    let apps: [SigningApplication] = components.compactMap { path, identifier in
+        trustedApplication(path, identifier: identifier).map { (path, $0) }
+    }
     guard apps.count == components.count else {
         return report("无法验证 GlobalProtect 或 PanGPS 的厂商签名，跳过证书权限检查。", status: 1)
     }
@@ -143,9 +165,13 @@ private func checkGlobalProtectSigning(repairFingerprint: String?) -> Int32 {
         return report("无法检查集团 VPN 私钥的签名权限。", status: 1)
     }
     if missing.isEmpty { return report("集团 VPN 证书签名权限已齐全。") }
-    guard repairFingerprint != nil else { return report(expected, status: 3) }
+    let missingNames = missing.map { URL(fileURLWithPath: $0.path).lastPathComponent }.joined(separator: "、")
+    guard repairFingerprint != nil else {
+        FileHandle.standardError.write(Data("缺少签名权限：\(missingNames)\n".utf8))
+        return report(expected, status: 3)
+    }
 
-    guard addSigningAccess(access, applications: missing) else {
+    guard addSigningAccess(access, applications: missing.map(\.trusted)) else {
         return report("无法准备集团 VPN 证书的签名授权。", status: 1)
     }
     let save = SecKeychainItemSetAccess(item, access)
@@ -157,7 +183,7 @@ private func checkGlobalProtectSigning(repairFingerprint: String?) -> Int32 {
           missingSigningAccess(verifiedAccess, applications: apps)?.isEmpty == true else {
         return report("无法验证新的签名授权，请在钥匙串访问中检查。", status: 1)
     }
-    return report("已补齐集团 VPN 证书的签名权限。")
+    return report("已补齐集团 VPN 证书的签名权限：\(missingNames)。")
 }
 
 let args = CommandLine.arguments
