@@ -31,3 +31,13 @@ ashleyvpn
 - 连接和关闭都在独立的终端窗口显示进度。命令完成或取消后，这个窗口自动关闭。一次只执行一个操作。
 
 Ashley VPN 在钥匙串中为两个 Wi-Fi 分别保存连接成功的凭据。每次运行安装脚本都会生成新的安装 ID，新安装不会使用前一次安装的 Wi-Fi 记录。macOS 只记住停止指定 GlobalProtect 服务的授权，不会让应用读取或保存本机管理员密码。升级或重装后，旧授权失效。
+
+## 卸载
+
+在安装 Ashley VPN 的 Mac 账户下运行：
+
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/uninstall.sh' | zsh -f
+```
+
+脚本会退出 Ashley VPN、将应用移到废纸篓，并清理启动命令、应用设置和本次安装保存的 Wi-Fi 凭据。移除应用后，本次安装的停止授权失效。公司 GlobalProtect 客户端和当前网络连接会保留。
