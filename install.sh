@@ -46,10 +46,10 @@ repair_certificate_access() {
     return "$check_status"
   fi
   if [[ ! -t 2 ]]; then
-    print -ru2 -- '集团 VPN 证书缺少签名权限，请在 macOS 终端重新运行安装命令。'
+    print -ru2 -- '集团 VPN 证书的私钥缺少应用访问权限，请在 macOS 终端重新运行安装命令。'
     return 1
   fi
-  print -r -- '集团 VPN 证书缺少签名权限。验证管理员身份后，将补齐 GlobalProtect 和 PanGPS 的签名权限。'
+  print -r -- '验证管理员身份后，将把缺少的应用加入集团 VPN 私钥的现有访问列表。'
   /usr/bin/sudo -k -p '请输入本机管理员密码以修复集团 VPN 证书权限：' -- "$checker" --repair "$result" </dev/tty
 }
 

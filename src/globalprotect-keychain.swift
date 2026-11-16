@@ -5,7 +5,11 @@ import Security
 
 // The issuer must be verified by the trust evaluation, not by its display name.
 private let companyCA = "a3e586bf8b8fe284b7a825929d00ee242eec26f94fc4347380ecb53e621eff38"
-private let sign = kSecACLAuthorizationSign as String
+// Imported private keys use this rule for the application list shown in Keychain Access.
+private let privateKeyActions = Set([
+    kSecACLAuthorizationDecrypt, kSecACLAuthorizationDerive, kSecACLAuthorizationExportClear,
+    kSecACLAuthorizationExportWrapped, kSecACLAuthorizationMAC, kSecACLAuthorizationSign,
+].map { $0 as String })
 private let components = [
     ("/Applications/GlobalProtect.app", "com.paloaltonetworks.GlobalProtect.client"),
     ("/Applications/GlobalProtect.app/Contents/Resources/PanGPS", "PanGPS"),
@@ -66,45 +70,55 @@ private func trustedData(_ app: SecTrustedApplication) -> Data? {
     return data as Data?
 }
 
-private func signingACLs(_ access: SecAccess) -> [SecACL]? {
-    var list: CFArray?
-    guard SecAccessCopyACLList(access, &list) == errSecSuccess, let acls = list as? [SecACL] else { return nil }
-    let matching = acls.filter { (SecACLCopyAuthorizations($0) as? [String])?.contains(sign) == true }
-    return matching.isEmpty ? nil : matching
-}
+private struct PrivateKeyRule {
+    let acl: SecACL
+    let description: CFString
+    let prompt: SecKeychainPromptSelector
+    let applications: [SecTrustedApplication]
 
-private func missingSigningAccess(_ access: SecAccess, applications: [SigningApplication]) -> [SigningApplication]? {
-    guard let acls = signingACLs(access), let validateTrustedApplication else { return nil }
-    var authorized = Set<String>()
-    for acl in acls {
+    init?(_ access: SecAccess) {
         var list: CFArray?
+        guard SecAccessCopyACLList(access, &list) == errSecSuccess, let acls = list as? [SecACL] else {
+            return nil
+        }
+        let candidates = acls.filter { Set(SecACLCopyAuthorizations($0) as? [String] ?? []) == privateKeyActions }
+        guard candidates.count == 1, let acl = candidates.first else { return nil }
+
+        var applicationList: CFArray?
         var description: CFString?
         var prompt = SecKeychainPromptSelector()
-        guard SecACLCopyContents(acl, &list, &description, &prompt) == errSecSuccess else { return nil }
-        // A rule without an application list does not demonstrate an explicit grant.
-        guard let list, !prompt.contains(.requirePassphase) else { continue }
-        guard let trusted = list as? [SecTrustedApplication] else { return nil }
-        for app in applications where !authorized.contains(app.path) {
-            let pathData = Data(app.path.utf8) + Data([0])
-            if trusted.contains(where: { stored in
-                trustedData(stored) == pathData && app.path.withCString {
-                    validateTrustedApplication(stored, $0) == errSecSuccess
-                }
-            }) {
-                authorized.insert(app.path)
+        guard SecACLCopyContents(acl, &applicationList, &description, &prompt) == errSecSuccess,
+              let description, let applications = applicationList as? [SecTrustedApplication] else {
+            return nil
+        }
+        self.acl = acl
+        self.description = description
+        self.prompt = prompt
+        self.applications = applications
+    }
+
+    func missingApplications(_ expected: [SigningApplication]) -> [SigningApplication]? {
+        guard let validateTrustedApplication else { return nil }
+        return expected.filter { app in
+            let path = Data(app.path.utf8) + Data([0])
+            return !applications.contains { stored in
+                trustedData(stored) == path &&
+                    app.path.withCString { validateTrustedApplication(stored, $0) == errSecSuccess }
             }
         }
     }
-    return applications.filter { !authorized.contains($0.path) }
-}
 
-private func addSigningAccess(_ access: SecAccess, applications: [SecTrustedApplication]) -> Bool {
-    // Add a sign-only entry. Existing entries may also allow private key export.
-    var entry: SecACL?
-    return SecACLCreateWithSimpleContents(access, applications as CFArray,
-                                          "GlobalProtect client certificate signing" as CFString,
-                                          SecKeychainPromptSelector(), &entry) == errSecSuccess &&
-        entry.map { SecACLUpdateAuthorizations($0, [sign] as CFArray) == errSecSuccess } == true
+    func add(_ missing: [SigningApplication]) -> Bool {
+        let paths = Set(missing.map { Data($0.path.utf8) + Data([0]) })
+        // Replace obsolete entries for these same paths. Preserve the existing app group,
+        // authorization operations, and prompt behavior of the imported private key.
+        let retained = applications.filter { app in
+            guard let path = trustedData(app) else { return true }
+            return !paths.contains(path)
+        }
+        let updated = retained + missing.map(\.trusted)
+        return SecACLSetContents(acl, updated as CFArray, description, prompt) == errSecSuccess
+    }
 }
 
 @discardableResult
@@ -161,29 +175,35 @@ private func checkGlobalProtectSigning(repairFingerprint: String?) -> Int32 {
     let item = unsafeBitCast(key, to: SecKeychainItem.self)
     var resultAccess: SecAccess?
     guard SecKeychainItemCopyAccess(item, &resultAccess) == errSecSuccess,
-          let access = resultAccess, let missing = missingSigningAccess(access, applications: apps) else {
-        return report("无法检查集团 VPN 私钥的签名权限。", status: 1)
+          let access = resultAccess, let rule = PrivateKeyRule(access),
+          let missing = rule.missingApplications(apps) else {
+        return report("无法唯一识别集团 VPN 私钥的应用访问规则，未修改钥匙串。", status: 1)
     }
-    if missing.isEmpty { return report("集团 VPN 证书签名权限已齐全。") }
+    if rule.prompt.contains(.requirePassphase) {
+        return report("集团 VPN 私钥要求每次访问时验证钥匙串密码，已保留此设置。", status: 1)
+    }
+    if missing.isEmpty { return report("集团 VPN 私钥访问权限已齐全。") }
     let missingNames = missing.map { URL(fileURLWithPath: $0.path).lastPathComponent }.joined(separator: "、")
     guard repairFingerprint != nil else {
-        FileHandle.standardError.write(Data("缺少签名权限：\(missingNames)\n".utf8))
+        FileHandle.standardError.write(Data("缺少私钥访问权限：\(missingNames)\n".utf8))
         return report(expected, status: 3)
     }
 
-    guard addSigningAccess(access, applications: missing.map(\.trusted)) else {
-        return report("无法准备集团 VPN 证书的签名授权。", status: 1)
+    guard rule.add(missing) else {
+        return report("无法准备集团 VPN 私钥的访问权限。", status: 1)
     }
     let save = SecKeychainItemSetAccess(item, access)
     guard save == errSecSuccess else {
-        return report("macOS 未能保存证书签名授权（\(save)）。", status: 1)
+        return report("macOS 未能保存私钥访问权限（\(save)）。", status: 1)
     }
     var verifiedAccess: SecAccess?
     guard SecKeychainItemCopyAccess(item, &verifiedAccess) == errSecSuccess, let verifiedAccess,
-          missingSigningAccess(verifiedAccess, applications: apps)?.isEmpty == true else {
+          let verifiedRule = PrivateKeyRule(verifiedAccess),
+          verifiedRule.prompt == rule.prompt,
+          verifiedRule.missingApplications(apps)?.isEmpty == true else {
         return report("无法验证新的签名授权，请在钥匙串访问中检查。", status: 1)
     }
-    return report("已补齐集团 VPN 证书的签名权限：\(missingNames)。")
+    return report("已补齐集团 VPN 私钥访问权限：\(missingNames)。")
 }
 
 let args = CommandLine.arguments
