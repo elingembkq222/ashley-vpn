@@ -7,8 +7,8 @@ source "$root/src/check-globalprotect.sh"
 target='/Applications/Ashley VPN.app'
 domain='com.ashley.vpn.companion'
 
-if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != --check ]]; }; then
-  print -u2 -- '用法：./install.sh [--check]'
+if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != --check && "$1" != --repair-keychain ]]; }; then
+  print -u2 -- '用法：./install.sh [--check | --repair-keychain]'
   exit 2
 fi
 
@@ -16,6 +16,41 @@ fail_check() {
   print -ru2 -- "[失败] $1"
   print -ru2 -- '安装已停止。'
   exit 1
+}
+
+run_build_step() {
+  local step="$1" diagnostics
+  shift
+  if "$@" > "$stage/build.log" 2>&1; then
+    return 0
+  fi
+  print -ru2 -- "[失败] $step。"
+  if diagnostics=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ashley-vpn-build.XXXXXX" 2>/dev/null) &&
+     /bin/cp "$stage/build.log" "$diagnostics" 2>/dev/null; then
+    print -ru2 -- "诊断日志：$diagnostics"
+  fi
+  exit 1
+}
+
+build_certificate_checker() {
+  MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建集团 VPN 证书权限组件失败' /usr/bin/xcrun swiftc -O \
+    "$root/src/globalprotect-keychain.swift" -o "$stage/globalprotect-keychain"
+}
+
+repair_certificate_access() {
+  local checker="$stage/globalprotect-keychain" result check_status=0
+  print -r -- '正在检查集团 VPN 证书权限…'
+  result=$("$checker" --check) || check_status=$?
+  if (( check_status != 3 )); then
+    print -r -- "$result"
+    return "$check_status"
+  fi
+  if [[ ! -t 2 ]]; then
+    print -ru2 -- '集团 VPN 证书缺少签名权限，请在交互终端运行安装命令并加 --repair-keychain。'
+    return 1
+  fi
+  print -r -- '集团 VPN 证书缺少签名权限。验证管理员身份后，将补齐 GlobalProtect 和 PanGPS 的签名权限。'
+  /usr/bin/sudo -k -p '请输入本机管理员密码以修复集团 VPN 证书权限：' -- "$checker" --repair "$result" </dev/tty
 }
 
 check_existing_installation() {
@@ -49,13 +84,15 @@ if [[ "$major" != <-> ]] || (( major < 12 )); then
 fi
 print -r -- "[通过] 操作系统：macOS $version"
 
-if [[ "${1:-}" != --check ]]; then
+if [[ -z "${1:-}" ]]; then
   latest_version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$root/src/Info.plist") ||
     fail_check '无法读取安装包版本。'
   latest_build=$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$root/src/Info.plist") ||
     fail_check '无法读取安装包构建号。'
 fi
-check_existing_installation "${1:-}"
+if [[ "${1:-}" != --repair-keychain ]]; then
+  check_existing_installation "${1:-}"
+fi
 
 if ! check_globalprotect 2>/dev/null; then
   fail_check '集团 GlobalProtect：客户端未安装或不完整，请通过公司渠道安装后重试。'
@@ -67,6 +104,14 @@ if ! /usr/bin/xcrun --find swiftc >/dev/null 2>&1 ||
   fail_check 'Xcode 命令行工具：找不到 Swift 编译器或 macOS SDK，请运行 xcode-select --install 后重试。'
 fi
 print -r -- '[通过] Xcode 命令行工具：Swift 编译器和 macOS SDK 可用'
+
+if [[ "${1:-}" == --repair-keychain ]]; then
+  stage=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ashley-vpn-keychain.XXXXXX")
+  trap '/bin/rm -R -- "$stage"' EXIT
+  build_certificate_checker
+  repair_certificate_access
+  exit 0
+fi
 
 if [[ ! -w /Applications ]]; then
   fail_check '「应用程序」目录：当前账号无法写入，请切换到有写入权限的账号后重试。'
@@ -115,24 +160,11 @@ resources="$app/Contents/Resources"
 /usr/bin/uuidgen > "$resources/installation-id"
 
 print -r -- '正在构建 Ashley VPN…'
-run_build_step() {
-  local step="$1" diagnostics
-  shift
-  if "$@" > "$stage/build.log" 2>&1; then
-    return 0
-  fi
-  print -ru2 -- "[失败] $step。安装已停止。"
-  if diagnostics=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ashley-vpn-build.XXXXXX" 2>/dev/null) &&
-     /bin/cp "$stage/build.log" "$diagnostics" 2>/dev/null; then
-    print -ru2 -- "诊断日志：$diagnostics"
-  fi
-  exit 1
-}
-
 MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建 Ashley VPN 主程序失败' /usr/bin/xcrun swiftc -parse-as-library -O \
   "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
 MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建钥匙串组件失败' /usr/bin/xcrun swiftc -O \
   "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
+build_certificate_checker
 run_build_step '签名 Ashley VPN 失败' /usr/bin/codesign --force --deep --sign - "$app"
 run_build_step '验证 Ashley VPN 签名失败' /usr/bin/codesign --verify --deep --strict "$app"
 /bin/zsh -f "$root/src/install-cli.zsh"
@@ -178,4 +210,7 @@ if [[ -x "$previous_keychain" ]]; then
   done
 fi
 
+if ! repair_certificate_access; then
+  print -ru2 -- 'Ashley VPN 已安装，集团 VPN 证书权限未修复。可稍后使用 --repair-keychain 重试。'
+fi
 print -r -- "Ashley VPN 已安装（$latest_version）。打开新的终端窗口，运行 ashleyvpn 启动菜单栏图标。"
