@@ -35,7 +35,7 @@ cancel_operation() {
   [[ -n "$started" && "$(process_start "$pid")" == "$started" ]] || return 3
   group=$(/bin/ps -p "$pid" -o pgid= | /usr/bin/awk '{$1=$1; if (NF) print}')
   command=$(/bin/ps -ww -p "$pid" -o command=)
-  # A Terminal .command runs in its own foreground job. Never signal the
+  # The Terminal launcher runs the operation in its own foreground job. Never signal the
   # login shell, a reused PID, or GlobalProtect processes owned by launchd.
   [[ "$group" == "$pid" && "$command" == "/bin/zsh -f "*" $action" ]] || return 2
   script=${command#"/bin/zsh -f "}
