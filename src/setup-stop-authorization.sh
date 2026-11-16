@@ -1,5 +1,5 @@
 #!/bin/sh
-# Grant this Mac account permission to stop only the GlobalProtect system job.
+# Authorize and stop only the GlobalProtect system job in the same sudo invocation.
 set -eu
 
 case "${1-}" in
@@ -106,3 +106,13 @@ if ! /usr/sbin/visudo -c -q; then
   exit 1
 fi
 /bin/mv -f "$stage/helper" "$helper"
+
+echo '管理员验证完成，正在停止 GlobalProtect 系统服务…'
+system_job=system/com.paloaltonetworks.gp.pangpsd
+"$helper" disable
+if /bin/launchctl print "$system_job" >/dev/null 2>&1; then
+  if ! "$helper" bootout && /bin/launchctl print "$system_job" >/dev/null 2>&1; then
+    echo '无法卸载 GlobalProtect 系统服务。' >&2
+    exit 1
+  fi
+fi

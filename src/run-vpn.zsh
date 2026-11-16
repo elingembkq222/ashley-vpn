@@ -18,6 +18,31 @@ vpn_state() {
   fi
 }
 
+connect_vpn() {
+  local installation_id last_connected=''
+  if ! IFS= read -r installation_id < "$ASHLEY_VPN_RESOURCES/installation-id" ||
+     [[ -z "$installation_id" ]]; then
+    print -ru2 -- '无法读取 Ashley VPN 安装标识，请重新运行安装脚本。'
+    return 1
+  fi
+  { IFS= read -r last_connected < "$ASHLEY_VPN_STATE/connected-installation"; } 2>/dev/null
+  if [[ "$last_connected" == "$installation_id" ]]; then
+    gp-connect
+    return
+  fi
+  if ! _gp-already-stopped; then
+    print -r -- '首次连接前检测到 GlobalProtect 正在运行，正在关闭现有服务…'
+    if ! gp-stop; then
+      print -ru2 -- '未确认 GlobalProtect 已停止，已取消本次连接。'
+      return 1
+    fi
+  fi
+  gp-connect || return
+  if ! print -r -- "$installation_id" > "$ASHLEY_VPN_STATE/connected-installation"; then
+    print -ru2 -- 'VPN 已连接，但未能记录本次安装已完成首次连接。'
+  fi
+}
+
 process_start() {
   LC_ALL=C /bin/ps -p "$1" -o lstart= | /usr/bin/awk '{$1=$1; if (NF) print}'
 }
@@ -84,13 +109,13 @@ print -r -- "$token $$ $1 $started" > "$operation_owner" || exit 1
 case "$1" in
   toggle)
     if [[ "$(vpn_state)" == stopped ]]; then
-      gp-connect
+      connect_vpn
     else
       gp-disconnect
     fi
     ;;
   connect)
-    gp-connect
+    connect_vpn
     ;;
   disconnect)
     gp-disconnect
