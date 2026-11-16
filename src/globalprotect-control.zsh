@@ -24,10 +24,13 @@ _gp-progress-run() {
   fi
   print -ru2 -- "$gpMessage…"
   (
-    trap 'exit 0' TERM
-    local gpElapsed
+    local gpElapsed gpSleep=''
+    trap 'if [[ -n "$gpSleep" ]]; then kill "$gpSleep" 2>/dev/null; fi; exit 0' TERM
     for (( gpElapsed = 4; ; gpElapsed += 4 )); do
-      /bin/sleep 4
+      /bin/sleep 4 &
+      gpSleep=$!
+      wait "$gpSleep" || exit
+      gpSleep=''
       print -ru2 -- "$gpMessage… 已等待约 ${gpElapsed} 秒"
     done
   ) &
@@ -290,7 +293,7 @@ gp-net-current-ssid() {
       | /usr/bin/sed -n 's/^Current Wi-Fi Network: //p' | /usr/bin/head -n 1)
   fi
   if [[ -z "$gpSsid" || "$gpSsid" == '<redacted>' ]]; then
-    if IFS= read -r gpHomeProfile 2>/dev/null < "$ASHLEY_VPN_STATE/home-wifi-profile" &&
+    if { IFS= read -r gpHomeProfile < "$ASHLEY_VPN_STATE/home-wifi-profile"; } 2>/dev/null &&
        gpProfile=$(_gp-net-active-profile) && [[ "$gpProfile" == "$gpHomeProfile" ]]; then
       gpSsid="$GP_HOME_WIFI"
     fi
@@ -323,6 +326,8 @@ _gp-wifi-join() {
   if [[ "$1" == saved ]]; then
     gpResult=$(LC_ALL=C "$ASHLEY_VPN_RESOURCES/wifi-keychain" join "$gpSsid" 2>&1)
     gpStatus=$?
+    # No credential means no association was attempted.
+    (( gpStatus != 44 )) || return 4
   else
     gpResult=$(LC_ALL=C /usr/sbin/networksetup -setairportnetwork "$GP_WIFI_IFACE" "$gpSsid" "$@" 2>&1)
     gpStatus=$?
@@ -357,15 +362,26 @@ _gp-wifi-join-retry() {
   fi
   for gpTry in 1 2 3; do
     if [[ "$2" == '-' ]]; then
-      print -r -- "$gpInput" | _gp-progress-run "正在加入 $1 并确认网络就绪" _gp-wifi-join "$@"
+      print -r -- "$gpInput" | _gp-wifi-join "$@"
     else
-      _gp-progress-run "正在加入 $1 并确认网络就绪" _gp-wifi-join "$@"
+      _gp-wifi-join "$@"
     fi
     gpStatus=$?
     (( gpStatus == 3 && gpTry < 3 )) || return "$gpStatus"
     print -u2 -- "正在重试连接 $1（第 $((gpTry + 1)) 次）…"
     /bin/sleep "$gpTry"
   done
+}
+
+_gp-wifi-join-default() {
+  emulate -L zsh
+  _gp-wifi-join-retry "$1" saved
+  local gpStatus=$?
+  if (( gpStatus == 4 )); then
+    _gp-wifi-join-retry "$1"
+  else
+    return "$gpStatus"
+  fi
 }
 
 wifi-switch() {
@@ -382,8 +398,7 @@ wifi-switch() {
     print -r -- "当前已在 $gpSsid。"
     return 0
   fi
-  # Use a saved credential first to avoid an unnecessary failed association.
-  _gp-wifi-join-retry "$gpSsid" saved
+  _gp-progress-run "正在加入 $gpSsid" _gp-wifi-join-default "$gpSsid"
   gpStatus=$?
   if (( gpStatus == 0 )); then
     print -r -- "已加入 $gpSsid。"
@@ -394,12 +409,6 @@ wifi-switch() {
     return 1
   fi
 
-  _gp-wifi-join-retry "$gpSsid"
-  gpStatus=$?
-  if (( gpStatus == 0 )); then
-    print -r -- "已加入 $gpSsid。"
-    return 0
-  fi
   if (( gpStatus != 2 )); then
     print -u2 -- "未能加入 $gpSsid，请在 Wi-Fi 菜单确认网络可用。"
     return 1
@@ -415,7 +424,7 @@ wifi-switch() {
   fi
   print -ru2 -- ''
   [[ -n "$gpPassword" ]] || return 1
-  if ! print -r -- "$gpPassword" | _gp-wifi-join-retry "$gpSsid" -; then
+  if ! print -r -- "$gpPassword" | _gp-progress-run "正在验证 Wi-Fi 密码并加入 $gpSsid" _gp-wifi-join-retry "$gpSsid" -; then
     print -u2 -- "未能加入 $gpSsid，请确认网络可用和密码正确。"
     return 1
   fi

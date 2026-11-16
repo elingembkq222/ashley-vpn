@@ -15,7 +15,10 @@ let service = "com.ashley.vpn.wifi.\(installationID.uuidString)"
 
 // The terminal supplies the password via stdin. Keep Keychain prompts out of
 // the background watcher so a missing grant can be handled in the terminal.
-guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else { exit(1) }
+let noSavedCredential: Int32 = 44
+guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else {
+    exit(args[1] == "join" ? noSavedCredential : 1)
+}
 let query: [String: Any] = [
     kSecClass as String: kSecClassGenericPassword,
     kSecAttrService as String: service,
@@ -30,7 +33,7 @@ if args[1] == "join" {
     var request = query
     request[kSecReturnData as String] = true
     guard SecItemCopyMatching(request as CFDictionary, &match) == errSecSuccess,
-          let password = match as? Data, !password.isEmpty else { exit(1) }
+          let password = match as? Data, !password.isEmpty else { exit(noSavedCredential) }
     // Use the credential locally. The helper never returns it to its caller.
     let input = Pipe()
     let command = Process()
