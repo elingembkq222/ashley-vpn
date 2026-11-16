@@ -13,9 +13,13 @@ struct TerminalSession {
                                     attributes: [.posixPermissions: 0o700])
         do {
             let script = """
-            /bin/rm -- \(Self.quote(launcher.path)) \(Self.quote(profile.path)) || exit 1
+            /bin/rm -- \(Self.quote(launcher.path)) \(Self.quote(profile.path)) || exit 0
             /bin/rmdir -- \(Self.quote(directory.path))
-            exec /bin/zsh -f \(Self.quote(runner.resolvingSymlinksInPath().path)) \(Self.quote(action))
+            # Give the VPN operation its own foreground group for scoped cancellation.
+            setopt monitor
+            /bin/zsh -f \(Self.quote(runner.resolvingSymlinksInPath().path)) \(Self.quote(action))
+            # Close the dedicated window after the operation exits, including on cancellation.
+            exit 0
             """
             try Data(script.utf8).write(to: launcher, options: .atomic)
             let settings: [String: Any] = [
@@ -24,8 +28,11 @@ struct TerminalSession {
                 "ProfileCurrentVersion": 2.06,
                 // The profile is scoped to the opened document. An imported
                 // profile cannot replay the operation after its launcher runs.
-                "CommandString": "/bin/zsh -f \(Self.quote(launcher.path))",
+                // Replace this window's login shell. Running as a child would
+                // return to an idle prompt when the VPN operation ends.
+                "CommandString": "exec /bin/zsh -f \(Self.quote(launcher.path))",
                 "RunCommandAsShell": false,
+                // Terminal closes this window on a clean exit.
                 "shellExitAction": 1,
                 "ShowWindowSettingsNameInTitle": true
             ]
