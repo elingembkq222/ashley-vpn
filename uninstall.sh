@@ -8,7 +8,7 @@ uninstall_ashley_vpn() {
   local state="$HOME/Library/Application Support/Ashley VPN"
   local launcher="$HOME/.local/bin/ashleyvpn"
   local process='^/Applications/Ashley VPN\.app/Contents/MacOS/ashley-vpn-menu$'
-  local uninstall_fd trash ssid file attempt
+  local uninstall_fd trash file attempt forget_status
 
   if [[ "$(/usr/bin/uname -s)" != Darwin ]] || (( EUID == 0 )); then
     print -ru2 -- '请在安装 Ashley VPN 的 Mac 账户下运行卸载命令。'
@@ -43,12 +43,17 @@ uninstall_ashley_vpn() {
 
   if [[ -d "$app" ]]; then
     if [[ -x "$app/Contents/Resources/wifi-keychain" ]]; then
-      for ssid in officewifi OfficeWiFi; do
-        if ! "$app/Contents/Resources/wifi-keychain" forget "$ssid"; then
-          print -ru2 -- "无法删除 Ashley VPN 保存的 $ssid 凭据，请解锁钥匙串后重试。"
-          return 1
-        fi
-      done
+      forget_status=0
+      "$app/Contents/Resources/wifi-keychain" forget-all || forget_status=$?
+      if (( forget_status == 2 )); then
+        forget_status=0
+        "$app/Contents/Resources/wifi-keychain" forget officewifi &&
+          "$app/Contents/Resources/wifi-keychain" forget OfficeWiFi || forget_status=$?
+      fi
+      if (( forget_status != 0 )); then
+        print -ru2 -- '无法删除 Ashley VPN 保存的 Wi-Fi 凭据，请解锁钥匙串后重试。'
+        return 1
+      fi
     else
       print -ru2 -- '安装缺少钥匙串组件，无法清理 Ashley VPN 保存的 Wi-Fi 凭据。'
     fi

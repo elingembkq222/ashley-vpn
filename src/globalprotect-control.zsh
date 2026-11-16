@@ -256,11 +256,8 @@ gp-status() {
   /usr/bin/pgrep -xl 'PanGPS|GlobalProtect' || print -- '无'
 }
 
-# --- 自动切换网络(2026-11-16 新增) ---
-# officewifi 用于连接集团 VPN，OfficeWiFi 是断开后可选的日常网络。
+# --- 网络选择 ---
 
-GP_VPN_WIFI='officewifi'
-GP_HOME_WIFI='OfficeWiFi'
 GP_WIFI_IFACE='en0'
 
 _gp-net-interfaces() {
@@ -321,10 +318,115 @@ gp-check-connect-network() {
   return 1
 }
 
+_gp-scan-wifi() {
+  emulate -L zsh
+  local gpScanDir gpApp="${ASHLEY_VPN_RESOURCES:h:h}"
+  gpScanDir=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ashley-wifi-scan.XXXXXX") || return
+  {
+    _gp-progress-run '正在扫描附近的 Wi-Fi' /usr/bin/open -g -n -W -a "$gpApp" --args \
+      --scan-wifi "$GP_WIFI_IFACE" "$gpScanDir/networks" || return
+    [[ -r "$gpScanDir/networks" ]] && /bin/cat -- "$gpScanDir/networks"
+  } always {
+    /bin/rm -r -- "$gpScanDir"
+  }
+}
+
+_gp-select-wifi() {
+  emulate -L zsh
+  [[ -t 0 && -t 2 ]] || return 1
+  local gpMode="$1" gpFound gpName gpCurrent gpInput gpQuery='' gpIndex gpFallback
+  local -a gpPinned gpVisible
+  local -aU gpNetworks
+  if [[ "$gpMode" == disconnect ]]; then
+    gpPinned=(OfficeWiFi officewifi)
+  else
+    gpPinned=(officewifi OfficeWiFi)
+  fi
+
+  while true; do
+    gpCurrent=''
+    if _gp-net-interface-active "$GP_WIFI_IFACE"; then
+      gpCurrent=$(gp-net-current-ssid)
+      [[ "$gpCurrent" == '<redacted>' ]] && gpCurrent=''
+    fi
+    gpFallback=false
+    if ! gpFound=$(_gp-scan-wifi) || [[ -z "$gpFound" ]]; then
+      gpFound=$(LC_ALL=C /usr/sbin/networksetup -listpreferredwirelessnetworks "$GP_WIFI_IFACE" 2>/dev/null |
+        /usr/bin/awk 'NR > 1 { sub(/^\t/, ""); print }')
+      gpFallback=true
+    fi
+    gpNetworks=()
+    for gpName in "$gpCurrent" "${(@f)gpFound}"; do
+      [[ -n "$gpName" && "$gpName" != *[[:cntrl:]]* ]] && gpNetworks+=("$gpName")
+    done
+    if [[ "$gpFallback" == true ]]; then
+      print -ru2 -- 'macOS 未返回附近的 Wi-Fi 名称。下面显示已保存的网络，也可手动输入名称。'
+    fi
+
+    while true; do
+      gpVisible=()
+      for gpName in "${gpPinned[@]}" "${(@oi)gpNetworks}"; do
+        [[ "${(L)gpName}" == *"${(L)gpQuery}"* ]] || continue
+        (( ${gpNetworks[(Ie)$gpName]} && ! ${gpVisible[(Ie)$gpName]} )) && gpVisible+=("$gpName")
+      done
+
+      print -ru2 -- ''
+      if [[ -n "$gpQuery" ]]; then
+        print -ru2 -- "Wi-Fi 筛选：$gpQuery"
+      else
+        print -ru2 -- '请选择 Wi-Fi'
+      fi
+      for (( gpIndex = 1; gpIndex <= ${#gpVisible}; gpIndex++ )); do
+        gpName="$gpVisible[gpIndex]"
+        if [[ "$gpName" == "$gpCurrent" ]]; then
+          print -ru2 -- "  $gpIndex. $gpName（当前）"
+        else
+          print -ru2 -- "  $gpIndex. $gpName"
+        fi
+      done
+      (( ${#gpVisible} )) || print -ru2 -- '  没有匹配的网络。'
+      print -ru2 -- '输入编号选择，输入名称筛选。/clear 清除筛选，/scan 重新扫描，/ssid 输入隐藏网络，0 取消。'
+      if [[ "$gpMode" == disconnect ]] || _gp-net-interface-active "$GP_WIFI_IFACE"; then
+        print -ru2 -- '直接回车保留当前网络。'
+      fi
+      IFS= read -r 'gpInput?Wi-Fi > ' || return 1
+      case "$gpInput" in
+        0) return 1 ;;
+        /clear) gpQuery='' ;;
+        /scan) break ;;
+        /ssid)
+          IFS= read -r 'gpInput?输入完整 Wi-Fi 名称（区分大小写，直接回车返回）：' || return 1
+          if [[ -n "$gpInput" ]]; then
+            print -r -- "$gpInput"
+            return 0
+          fi
+          ;;
+        '')
+          if [[ "$gpMode" == disconnect ]] || _gp-net-interface-active "$GP_WIFI_IFACE"; then
+            return 0
+          fi
+          ;;
+        *)
+          if [[ "$gpInput" == <-> && "${#gpInput}" -le 5 ]]; then
+            gpIndex=$(( 10#$gpInput ))
+            if (( gpIndex >= 1 && gpIndex <= ${#gpVisible} )); then
+              print -r -- "$gpVisible[gpIndex]"
+              return 0
+            fi
+            print -ru2 -- '编号不在当前列表里。用 /ssid 可以输入纯数字名称。'
+          else
+            gpQuery="$gpInput"
+          fi
+          ;;
+      esac
+    done
+  done
+}
+
 gp-disconnect() {
   emulate -L zsh
   gp-stop || return
-  local GP_WIFI_IFACE
+  local GP_WIFI_IFACE gpSsid
   if _gp-net-wired-ready; then
     print -r -- '检测到有线网络，保留当前网络设置。'
   elif _gp-net-system-vpn-connected; then
@@ -332,65 +434,25 @@ gp-disconnect() {
   elif ! GP_WIFI_IFACE=$(_gp-net-interfaces wifi | /usr/bin/head -n 1) ||
        [[ -z "$GP_WIFI_IFACE" ]]; then
     print -r -- '这台 Mac 没有可用的 Wi-Fi 接口，已结束关闭流程。'
-  elif _gp-net-interface-active "$GP_WIFI_IFACE" && [[ "$(gp-net-current-ssid)" == "$GP_HOME_WIFI" ]]; then
-    print -r -- "当前已在 $GP_HOME_WIFI。"
-  elif [[ -r "$ASHLEY_VPN_STATE/home-wifi-profile" ]] ||
-       LC_ALL=C /usr/sbin/networksetup -listpreferredwirelessnetworks "$GP_WIFI_IFACE" 2>/dev/null |
-         /usr/bin/awk -v ssid="$GP_HOME_WIFI" '
-           { sub(/^[[:space:]]+/, "") }
-           $0 == ssid { found = 1 }
-           END { exit !found }
-         '; then
-    if ! wifi-switch "$GP_HOME_WIFI"; then
-      print -ru2 -- "VPN 已关闭，未切换到 $GP_HOME_WIFI。"
+  elif gpSsid=$(_gp-select-wifi disconnect) && [[ -n "$gpSsid" ]]; then
+    if ! wifi-switch "$gpSsid"; then
+      print -ru2 -- 'VPN 已关闭，Wi-Fi 切换未完成。'
     fi
   else
-    print -r -- "这台 Mac 未配置 $GP_HOME_WIFI，保留当前网络设置。"
+    print -r -- 'VPN 已关闭，保留当前网络设置。'
   fi
   return 0
 }
 
-_gp-net-active-profile() {
-  emulate -L zsh
-  /usr/sbin/scutil <<EOF | /usr/bin/awk '
-    $1 == "Active" && $2 == ":" && $3 == "TRUE" { active = 1 }
-    $1 == "ProfileID" && $2 == ":" && length($3) == 64 && $3 !~ /[^0-9a-f]/ { profile = $3 }
-    END { if (active && profile) print profile; else exit 1 }
-  '
-show State:/Network/Interface/$GP_WIFI_IFACE/Link
-show State:/Network/Interface/$GP_WIFI_IFACE/AirPort
-quit
-EOF
-}
-
-_gp-net-store-home-profile() {
-  emulate -L zsh
-  local gpProfile="$1" gpTemp
-  [[ "${#gpProfile}" == 64 && "$gpProfile" != *[^0-9a-f]* ]] || return 1
-  umask 077
-  gpTemp=$(/usr/bin/mktemp "$ASHLEY_VPN_STATE/.home-wifi-profile.XXXXXX") || return
-  if ! print -r -- "$gpProfile" > "$gpTemp" ||
-     ! /bin/mv -f "$gpTemp" "$ASHLEY_VPN_STATE/home-wifi-profile"; then
-    /bin/rm -- "$gpTemp"
-    return 1
-  fi
-}
-
 gp-net-current-ssid() {
   emulate -L zsh
-  local gpSsid gpHomeProfile gpProfile
+  local gpSsid
   gpSsid=$(/usr/sbin/ipconfig getsummary "$GP_WIFI_IFACE" 2>/dev/null \
     | /usr/bin/sed -n 's/^[[:space:]]*SSID : //p' | /usr/bin/head -n 1)
   if [[ -z "$gpSsid" || "$gpSsid" == '<redacted>' ]]; then
     # ipconfig 可能因缺少定位权限输出 <redacted>,退回 networksetup 查询。
     gpSsid=$(/usr/sbin/networksetup -getairportnetwork "$GP_WIFI_IFACE" 2>/dev/null \
       | /usr/bin/sed -n 's/^Current Wi-Fi Network: //p' | /usr/bin/head -n 1)
-  fi
-  if [[ -z "$gpSsid" || "$gpSsid" == '<redacted>' ]]; then
-    if { IFS= read -r gpHomeProfile < "$ASHLEY_VPN_STATE/home-wifi-profile"; } 2>/dev/null &&
-       gpProfile=$(_gp-net-active-profile) && [[ "$gpProfile" == "$gpHomeProfile" ]]; then
-      gpSsid="$GP_HOME_WIFI"
-    fi
   fi
   print -r -- "${gpSsid:-}"
 }
@@ -410,11 +472,8 @@ gp-net-current() {
 
 _gp-wifi-join() {
   emulate -L zsh
-  local gpSsid="$1" gpResult gpStatus gpCur gpPriorProfile gpAssociatedProfile gpJoinedProfile
+  local gpSsid="$1" gpResult gpStatus gpCur
   shift
-  if [[ "$gpSsid" == "$GP_HOME_WIFI" ]]; then
-    gpPriorProfile=$(_gp-net-active-profile)
-  fi
   # networksetup can print a join error and still exit zero. A lone "-" reads
   # the password from stdin instead of exposing it in the process arguments.
   if [[ "$1" == saved ]]; then
@@ -435,15 +494,6 @@ _gp-wifi-join() {
   fi
   gpCur=$(gp-net-current-ssid)
   [[ -z "$gpCur" || "$gpCur" == '<redacted>' || "$gpCur" == "$gpSsid" ]] || return 3
-  if [[ "$gpSsid" == "$GP_HOME_WIFI" ]]; then
-    gpAssociatedProfile=$(_gp-net-active-profile)
-    _gp-net-wait-wifi "$gpSsid" || return 3
-    if gpJoinedProfile=$(_gp-net-active-profile) &&
-       [[ "$gpJoinedProfile" == "$gpAssociatedProfile" ]] &&
-       [[ "$gpCur" == "$GP_HOME_WIFI" || "$gpJoinedProfile" != "$gpPriorProfile" ]]; then
-      _gp-net-store-home-profile "$gpJoinedProfile"
-    fi
-  fi
   return 0
 }
 
@@ -475,18 +525,21 @@ wifi-switch() {
   unsetopt xtrace
   local gpSsid="$1" gpCur gpPassword gpStatus
   local gpKeychain="$ASHLEY_VPN_RESOURCES/wifi-keychain"
-  if [[ "$gpSsid" != "$GP_VPN_WIFI" && "$gpSsid" != "$GP_HOME_WIFI" ]]; then
-    print -u2 -- "用法：wifi-switch $GP_VPN_WIFI 或 wifi-switch $GP_HOME_WIFI"
+  if [[ -z "$gpSsid" || "$gpSsid" == *[[:cntrl:]]* ]] ||
+     ! (LC_ALL=C; (( ${#gpSsid} <= 32 ))); then
+    print -ru2 -- 'Wi-Fi 名称须为 1–32 字节且不含控制字符。'
     return 1
   fi
   gpCur=$(gp-net-current-ssid)
   if [[ "$gpCur" == "$gpSsid" ]] && _gp-net-interface-active "$GP_WIFI_IFACE"; then
+    _gp-progress-run "正在确认 $gpSsid 网络就绪" _gp-net-wait-wifi "$gpSsid" || return
     print -r -- "当前已在 $gpSsid。"
     return 0
   fi
   _gp-progress-run "正在加入 $gpSsid" _gp-wifi-join-default "$gpSsid"
   gpStatus=$?
   if (( gpStatus == 0 )); then
+    _gp-progress-run "正在确认 $gpSsid 网络就绪" _gp-net-wait-wifi "$gpSsid" || return
     print -r -- "已加入 $gpSsid。"
     return 0
   fi
@@ -521,6 +574,7 @@ wifi-switch() {
       *) print -ru2 -- "未能加入 $gpSsid，请确认网络可用后重新输入密码。" ;;
     esac
   done
+  _gp-progress-run "正在确认 $gpSsid 网络就绪" _gp-net-wait-wifi "$gpSsid" || return
   print -r -- "已加入 $gpSsid。"
   if ! print -rn -- "$gpPassword" | "$gpKeychain" save "$gpSsid"; then
     print -u2 -- 'Wi-Fi 已连接，但密码未能保存到本机钥匙串。'
@@ -534,7 +588,7 @@ _gp-net-wait-wifi() {
   for gpAttempt in {1..20}; do
     gpCur=$(gp-net-current-ssid)
     if ! _gp-net-interface-active "$GP_WIFI_IFACE" ||
-       [[ -n "$gpCur" && "$gpCur" != '<redacted>' && "$gpCur" != "$gpSsid" ]]; then
+       [[ -n "$gpSsid" && -n "$gpCur" && "$gpCur" != '<redacted>' && "$gpCur" != "$gpSsid" ]]; then
       gpReady=0
     elif /usr/sbin/ipconfig getifaddr "$GP_WIFI_IFACE" >/dev/null 2>&1 &&
        /usr/sbin/ipconfig getoption "$GP_WIFI_IFACE" router >/dev/null 2>&1; then
@@ -544,7 +598,7 @@ _gp-net-wait-wifi() {
     fi
     /bin/sleep 1
   done
-  print -u2 -- "$gpSsid 的连接尚未确认，或 Wi-Fi 尚未获得 IPv4 地址和路由。"
+  print -u2 -- "${gpSsid:-当前 Wi-Fi} 的连接尚未确认，或 Wi-Fi 尚未获得 IPv4 地址和路由。"
   return 1
 }
 
@@ -649,35 +703,35 @@ _gp-wait-vpn() {
 
 gp-connect() {
   emulate -L zsh
-  local GP_WIFI_IFACE gpSsid=''
+  local GP_WIFI_IFACE='' gpSsid=''
   if _gp-net-wired-ready; then
-    print -r -- '检测到有线网络已就绪，无需切换 Wi-Fi。'
+    print -r -- '检测到有线网络已就绪，无需选择 Wi-Fi。'
   else
     GP_WIFI_IFACE=$(_gp-net-interfaces wifi | /usr/bin/head -n 1)
     if [[ -z "$GP_WIFI_IFACE" ]]; then
       print -ru2 -- '没有可用的有线网络或 Wi-Fi 接口，无法启动 GlobalProtect。'
       return 1
     fi
-    if _gp-net-interface-active "$GP_WIFI_IFACE"; then
-      gpSsid=$(gp-net-current-ssid)
-      [[ -n "$gpSsid" ]] || gpSsid='<redacted>'
-    fi
-    if [[ "$gpSsid" == "$GP_VPN_WIFI" ]]; then
-      print -r -- "当前已在 $GP_VPN_WIFI。"
-    elif [[ -n "$gpSsid" && "$gpSsid" != '<redacted>' ]]; then
-      print -r -- "当前 Wi-Fi 已连接，正在切换到 $GP_VPN_WIFI…"
-    elif [[ "$gpSsid" == '<redacted>' ]]; then
-      print -r -- "当前 Wi-Fi 名称不可读，正在确认能否加入 $GP_VPN_WIFI…"
-    else
-      print -r -- "当前 Wi-Fi 未连接，正在加入 $GP_VPN_WIFI…"
-    fi
-    [[ "$gpSsid" == "$GP_VPN_WIFI" ]] || wifi-switch "$GP_VPN_WIFI" || return
-    if ! _gp-progress-run "正在确认 $GP_VPN_WIFI 网络就绪" _gp-net-wait-wifi "$GP_VPN_WIFI"; then
-      print -ru2 -- '网络未就绪，已取消启动 GlobalProtect。'
+    if ! gpSsid=$(_gp-select-wifi connect); then
+      print -ru2 -- '未选择 Wi-Fi，已取消本次连接。'
       return 1
     fi
   fi
-  print -r -- '网络已就绪,启动 GlobalProtect …'
+  if [[ "${1:-}" == reset ]] && ! _gp-already-stopped; then
+    print -r -- '首次连接前检测到 GlobalProtect 正在运行，正在关闭现有服务…'
+    if ! gp-stop; then
+      print -ru2 -- '未确认 GlobalProtect 已停止，已取消本次连接。'
+      return 1
+    fi
+  fi
+  if [[ -n "$GP_WIFI_IFACE" ]]; then
+    if [[ -n "$gpSsid" ]]; then
+      wifi-switch "$gpSsid" || return
+    else
+      _gp-progress-run '正在确认当前 Wi-Fi 网络就绪' _gp-net-wait-wifi '' || return
+    fi
+  fi
+  print -r -- '网络已就绪，正在启动 GlobalProtect…'
   gp-start || return
   _gp-wait-vpn
 }
