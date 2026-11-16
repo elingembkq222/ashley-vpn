@@ -20,7 +20,7 @@ curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/boot
 ashleyvpn
 ```
 
-系统菜单栏会出现带盾牌的 **Ashley VPN** 图标。已下载源码时，也可本地运行 `./install.sh`，或以 `./install.sh --check` 只检查 GlobalProtect。
+系统菜单栏会出现带橙色爪印的 **Ashley VPN** 图标。已下载源码时，也可本地运行 `./install.sh`，或以 `./install.sh --check` 只检查 GlobalProtect。
 
 ## 使用
 
