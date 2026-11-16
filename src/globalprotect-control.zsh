@@ -157,7 +157,6 @@ gp-stop() {
     return 0
   fi
   print -r -- '正在关闭 GlobalProtect…'
-  _gp-authorize-stop || return
   local gpGui="gui/$EUID"
   local gpSystemJob='system/com.paloaltonetworks.gp.pangpsd' gpSystemDisabled
   gpSystemDisabled=$(/bin/launchctl print-disabled system 2>/dev/null)
@@ -165,6 +164,7 @@ gp-stop() {
   if { [[ "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => disabled'* ]] &&
        [[ "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => true'* ]]; } ||
      /bin/launchctl print "$gpSystemJob" >/dev/null 2>&1; then
+    _gp-authorize-stop || return
     /usr/bin/sudo -kn -- /private/etc/ashley-vpn-stop disable || return
   fi
   _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangpa" || return
@@ -467,7 +467,9 @@ _gp-vpn-log-state() {
       split(fields[2], time, ":")
       stamp = day[3] day[1] day[2] time[1] time[2] time[3]
       if (length(stamp) != 14 || stamp < since) next
-      if (line ~ /: VPN tunnel is connected[.]?[[:space:]]*$/) {
+      # Some GlobalProtect versions add ellipses to state names.
+      sub(/[.[:space:]]+$/, "", line)
+      if (line ~ /: VPN tunnel is connected$/) {
         tunnel = 1
         state = "verifying"
       } else if (line ~ /: Tunnel down([.]|time is [0-9]+ miliseconds)?[[:space:]]*$/) {
@@ -502,7 +504,8 @@ _gp-vpn-current-state() {
   local -a gpLogs
   gpPid=$(/usr/bin/pgrep -x PanGPS) || return 1
   [[ -n "$gpPid" && "$gpPid" != *[^0-9]* ]] || return 1
-  gpStartText=$(/bin/ps -p "$gpPid" -o lstart= | /usr/bin/awk '{$1=$1; print}')
+  # Both sides must use the same locale for weekday and month names.
+  gpStartText=$(LC_ALL=C /bin/ps -p "$gpPid" -o lstart= | /usr/bin/awk '{$1=$1; print}')
   gpStarted=$(LC_ALL=C /bin/date -j -f '%a %b %e %T %Y' "$gpStartText" '+%Y%m%d%H%M%S' 2>/dev/null) || return 1
   [[ -r "${gpLog:r}.1.log" ]] && gpLogs+=("${gpLog:r}.1.log")
   [[ -r "$gpLog" ]] && gpLogs+=("$gpLog")
