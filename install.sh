@@ -55,7 +55,7 @@ fi
 state="$HOME/Library/Application Support/Ashley VPN"
 (umask 077; /bin/mkdir -p "$state"; : >> "$state/operation.lock")
 zmodload zsh/system
-if ! zsystem flock -t 0 -f install_fd "$state/operation.lock"; then
+if ! zsystem flock -t 0 -f install_fd "$state/operation.lock" 2>/dev/null; then
   print -u2 -- 'Ashley VPN 正在连接或关闭，请等终端操作结束后重试安装。'
   exit 1
 fi
@@ -72,11 +72,26 @@ resources="$app/Contents/Resources"
 /usr/bin/uuidgen > "$resources/installation-id"
 
 print -r -- '正在构建 Ashley VPN…'
-MACOSX_DEPLOYMENT_TARGET=12.0 /usr/bin/xcrun swiftc -parse-as-library -O \
+run_build_step() {
+  local step="$1" diagnostics
+  shift
+  if "$@" > "$stage/build.log" 2>&1; then
+    return 0
+  fi
+  print -ru2 -- "[失败] $step。安装已停止。"
+  if diagnostics=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ashley-vpn-build.XXXXXX" 2>/dev/null) &&
+     /bin/cp "$stage/build.log" "$diagnostics" 2>/dev/null; then
+    print -ru2 -- "诊断日志：$diagnostics"
+  fi
+  exit 1
+}
+
+MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建 Ashley VPN 主程序失败' /usr/bin/xcrun swiftc -parse-as-library -O \
   "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
-MACOSX_DEPLOYMENT_TARGET=12.0 /usr/bin/xcrun swiftc -O "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
-/usr/bin/codesign --force --deep --sign - "$app"
-/usr/bin/codesign --verify --deep --strict "$app"
+MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建钥匙串组件失败' /usr/bin/xcrun swiftc -O \
+  "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
+run_build_step '签名 Ashley VPN 失败' /usr/bin/codesign --force --deep --sign - "$app"
+run_build_step '验证 Ashley VPN 签名失败' /usr/bin/codesign --verify --deep --strict "$app"
 /bin/zsh -f "$root/src/install-cli.zsh"
 
 # Replace only the menu app. An ongoing VPN tunnel stays with GlobalProtect.
