@@ -2,15 +2,17 @@
 
 Ashley VPN 是独立的 macOS 菜单栏应用。它通过本机已有的公司 GlobalProtect 客户端开启和关闭集团 VPN。
 
-## 一条命令安装
+## 下载并安装
 
-需要 macOS 12 或更新版本、已按公司流程安装的 GlobalProtect 客户端、Xcode Command Line Tools，以及能写入「应用程序」目录的账号。安装脚本先检查 GlobalProtect，缺少时会停止并提示先安装客户端。
+需要 macOS 12 或更新版本、公司 GlobalProtect 客户端、Xcode Command Line Tools，以及能写入「应用程序」目录的账号。缺少 Xcode Command Line Tools 时可先运行 `xcode-select --install`。
+
+在 macOS 终端运行这一条命令即可下载并安装。下载无需 GitHub 登录。
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | bash
+/usr/bin/curl -q -fsSL --proto '=https' --proto-redir '=https' 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | /bin/bash
 ```
 
-下载无需 GitHub 登录。安装脚本保存启动命令到 `~/.local/bin/ashleyvpn`，并将这个目录加入 zsh 或 Bash 新终端的 PATH。
+脚本会先检查 GlobalProtect，缺少时会提示先安装客户端。看到「Ashley VPN 已安装」后，即可打开新终端启动。安装脚本将 `ashleyvpn` 放到 `~/.local/bin`，并为新的 zsh 或 Bash 终端配置 PATH。
 
 ## 一条命令启动
 
