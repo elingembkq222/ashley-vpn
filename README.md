@@ -12,15 +12,11 @@ Ashley VPN 是独立的 macOS 菜单栏应用。它通过本机已有的公司 G
 curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | bash
 ```
 
-安装命令会检查本机版本。版本一致时提示「已是最新版，无需重装」。版本不同时，先构建并验证新版，再自动移除旧应用并安装新版。
+安装命令会检查本机版本。版本一致时保留当前安装并继续检查证书权限。版本不同时，先构建并验证新版，再自动移除旧应用并安装新版。
 
 需要安装时，终端会显示 macOS 版本、GlobalProtect、Xcode 命令行工具和「应用程序」目录的检查结果。遇到第一项失败会停止安装，并显示处理方法。看到「Ashley VPN 已安装」后，即可打开新终端启动。安装脚本将 `ashleyvpn` 放到 `~/.local/bin`，并为新的 zsh 或 Bash 终端配置 PATH。
 
-安装或升级后会检查系统钥匙串中的集团 VPN 客户端证书。证书匹配且签名权限缺失时，终端会提示管理员验证，然后只为 GlobalProtect 和 PanGPS 补齐签名权限。权限齐全、证书缺失或匹配到多张证书时会跳过。需要重试权限修复时，可以单独运行：
-
-```sh
-curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | bash -s -- --repair-keychain
-```
+安装、升级或确认已是最新版后，终端都会检查系统钥匙串中的集团 VPN 客户端证书。唯一匹配的证书缺少签名权限时，终端会提示管理员验证，然后只为 GlobalProtect 和 PanGPS 补齐签名权限。权限齐全、证书缺失或匹配到多张证书时会显示检查结果。若授权取消或失败，可在终端再次运行同一条安装命令。
 
 ## 一条命令启动
 
