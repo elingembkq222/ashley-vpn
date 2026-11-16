@@ -7,8 +7,9 @@ source "$root/src/check-globalprotect.sh"
 target='/Applications/Ashley VPN.app'
 domain='com.ashley.vpn.companion'
 
-if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != --check && "$1" != --repair-keychain ]]; }; then
-  print -u2 -- '用法：./install.sh [--check | --repair-keychain]'
+mode="${1:-}"
+if (( $# > 1 )) || [[ -n "$mode" && "$mode" != --check && "$mode" != --repair-keychain && "$mode" != --restore-keychain-prompt ]]; then
+  print -u2 -- '用法：./install.sh [--check | --repair-keychain | --restore-keychain-prompt]'
   exit 2
 fi
 
@@ -37,20 +38,52 @@ build_certificate_checker() {
     "$root/src/globalprotect-keychain.swift" -o "$stage/globalprotect-keychain"
 }
 
+show_certificate_help() {
+  print -ru2 -- '可在「钥匙串访问 → 系统 → 集团 VPN 客户端证书 → 私钥 → 访问控制」核对权限。'
+  [[ -t 2 && -z "${SSH_CONNECTION:-}" ]] || return 0
+  local action
+  if action=$(/usr/bin/osascript - "$1" 2>/dev/null <<'APPLESCRIPT'
+on run argv
+    set summary to item 1 of argv
+    set instructions to "在「系统」钥匙串里展开集团 VPN 客户端证书，打开其私钥的「访问控制」，保留「允许访问之前确认」。" & return & return & "点 + 补上缺少的应用：" & return & "/Applications/GlobalProtect.app" & return & "/Applications/GlobalProtect.app/Contents/Resources/PanGPS" & return & return & "如果两项都在，但每次仍弹窗，请核对「询问钥匙串密码」。若它是此次升级后才开启的，可恢复原设置。最后点「存储更改」，按 macOS 提示验证。"
+    set choice to display dialog (summary & return & return & instructions) with title "Ashley VPN · 集团证书权限" buttons {"稍后处理", "打开钥匙串访问"} default button "打开钥匙串访问" cancel button "稍后处理"
+    return button returned of choice
+end run
+APPLESCRIPT
+  ) && [[ "$action" == '打开钥匙串访问' ]]; then
+    /usr/bin/open -b com.apple.keychainaccess || true
+  fi
+}
+
 repair_certificate_access() {
   local checker="$stage/globalprotect-keychain" result check_status=0
+  local check_option=--check write_option=--repair
+  local message='验证管理员身份后，将把缺少的应用加入集团 VPN 私钥的现有访问列表。'
+  if [[ "$mode" == --restore-keychain-prompt ]]; then
+    check_option=--check-prompt
+    write_option=--restore-prompt
+    message='验证管理员身份后，将取消这把集团 VPN 私钥的逐次密码提示，保留现有受信应用。'
+  fi
   print -r -- '正在检查集团 VPN 证书权限…'
-  result=$("$checker" --check) || check_status=$?
+  result=$("$checker" "$check_option") || check_status=$?
   if (( check_status != 3 )); then
     print -r -- "$result"
+    if (( check_status == 4 )); then
+      show_certificate_help "$result"
+    fi
     return "$check_status"
   fi
   if [[ ! -t 2 ]]; then
-    print -ru2 -- '集团 VPN 证书的私钥缺少应用访问权限，请在 macOS 终端重新运行安装命令。'
+    print -ru2 -- '修复私钥权限需要管理员验证，请在 macOS 终端运行。'
     return 1
   fi
-  print -r -- '验证管理员身份后，将把缺少的应用加入集团 VPN 私钥的现有访问列表。'
-  /usr/bin/sudo -k -p '请输入本机管理员密码以修复集团 VPN 证书权限：' -- "$checker" --repair "$result" </dev/tty
+  print -r -- "$message"
+  local repair_status=0
+  /usr/bin/sudo -k -p '请输入本机管理员密码以修复集团 VPN 证书权限：' -- "$checker" "$write_option" "$result" </dev/tty || repair_status=$?
+  if (( repair_status != 0 )); then
+    show_certificate_help '安装器未能完成或验证自动修复。你可以在钥匙串访问中处理。'
+  fi
+  return "$repair_status"
 }
 
 check_existing_installation() {
@@ -98,8 +131,8 @@ if [[ -z "${1:-}" ]]; then
   latest_build=$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$root/src/Info.plist") ||
     fail_check '无法读取安装包构建号。'
 fi
-if [[ "${1:-}" != --repair-keychain ]]; then
-  check_existing_installation "${1:-}"
+if [[ -z "$mode" || "$mode" == --check ]]; then
+  check_existing_installation "$mode"
 fi
 
 if ! check_globalprotect 2>/dev/null; then
@@ -128,13 +161,13 @@ if ! zsystem flock -t 0 -f install_fd "$state/operation.lock" 2>/dev/null; then
   print -u2 -- 'Ashley VPN 正在连接或关闭，请等终端操作结束后重试安装。'
   exit 1
 fi
-if [[ "${1:-}" != --repair-keychain ]]; then
+if [[ -z "$mode" ]]; then
   check_existing_installation
   if [[ "$installed_current" == true ]]; then
     print -r -- "Ashley VPN $latest_version 已是最新版，无需重装。"
   fi
 fi
-if [[ "${1:-}" == --repair-keychain || "$installed_current" == true ]]; then
+if [[ -n "$mode" || "$installed_current" == true ]]; then
   stage=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ashley-vpn-keychain.XXXXXX")
   trap '/bin/rm -R -- "$stage"' EXIT
   build_certificate_checker
