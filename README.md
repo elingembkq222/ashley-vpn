@@ -20,7 +20,7 @@ curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/boot
 ashleyvpn
 ```
 
-单击顶部菜单栏的爪印可以打开 VPN 菜单。桌面右下角的悬浮爪印可以拖动，单击直接切换 VPN。隧道建立后爪印为橙色，关闭后为灰色，连接或关闭过程中光点会沿外圈移动。可以用菜单栏的「显示桌面图标」恢复已隐藏的悬浮图标。已下载源码时，也可本地运行 `./install.sh`，或以 `./install.sh --check` 只检查 GlobalProtect。
+单击顶部菜单栏的爪印可以打开 VPN 菜单。桌面右下角的悬浮爪印可以拖动，单击直接切换 VPN。隧道建立后爪印为橙色，关闭后为灰色，连接或关闭过程中光点会沿外圈移动。此时再点一下桌面爪印会取消本次终端操作，图标随后按实际 VPN 状态显示。可以用菜单栏的「显示桌面图标」恢复已隐藏的悬浮图标。已下载源码时，也可本地运行 `./install.sh`，或以 `./install.sh --check` 只检查 GlobalProtect。
 
 ## 使用
 

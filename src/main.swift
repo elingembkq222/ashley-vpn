@@ -5,6 +5,9 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private enum VPNState: String {
         case stopped, running, connected
     }
+    private enum Cancellation {
+        case requested, sending, sent
+    }
 
     private var item: NSStatusItem?
     private var orb: FloatingOrb?
@@ -15,6 +18,9 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private var state: VPNState = .stopped
     private var busy = false
     private var pendingUntil: TimeInterval?
+    private var cancellation: Cancellation?
+    private var cancellationTarget: String?
+    private var activeOperation: String?
     private var readingStatus = false
     private var statusTimer: Timer?
     private var animationTimer: Timer?
@@ -30,7 +36,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         }
 
         if let image = disabledOrb {
-            let orb = FloatingOrb(image: image) { [weak self] in self?.run("toggle") }
+            let orb = FloatingOrb(image: image) { [weak self] in self?.toggleFromDesktop() }
             self.orb = orb
             orb.show()
         }
@@ -88,38 +94,85 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         return timer
     }
 
-    private func refreshStatus() {
-        guard !readingStatus, let runner = Bundle.main.url(forResource: "run-vpn", withExtension: "zsh") else {
+    private func runMonitor(_ arguments: [String], completion: @escaping @MainActor (Int32, String) -> Void) {
+        guard let runner = Bundle.main.url(forResource: "run-vpn", withExtension: "zsh") else {
+            completion(-1, "")
             return
         }
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-f", runner.path, "status"]
+        process.arguments = ["-f", runner.path] + arguments
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        process.terminationHandler = { [weak self] child in
+        process.terminationHandler = { child in
             let raw = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            let fields = raw.split(whereSeparator: \.isWhitespace)
-            Task { @MainActor in
-                guard let self else { return }
-                self.readingStatus = false
-                if child.terminationStatus == 0, fields.count == 2,
-                   let next = VPNState(rawValue: String(fields[1])) {
-                    self.state = next
-                    self.busy = fields[0] == "busy"
-                }
-                if self.busy || self.uptime >= (self.pendingUntil ?? .infinity) {
-                    self.pendingUntil = nil
-                }
-                self.updateDisplay()
-            }
+            Task { @MainActor in completion(child.terminationStatus, raw) }
         }
-        readingStatus = true
         do {
             try process.run()
         } catch {
-            readingStatus = false
+            completion(-1, "")
+        }
+    }
+
+    private func refreshStatus() {
+        guard !readingStatus else { return }
+        readingStatus = true
+        runMonitor(["status"]) { [weak self] code, raw in
+            guard let self else { return }
+            self.readingStatus = false
+            let fields = raw.split(whereSeparator: \.isWhitespace)
+            if code == 0, fields.count == 3, let next = VPNState(rawValue: String(fields[1])) {
+                self.state = next
+                self.busy = fields[0] == "busy"
+                self.activeOperation = self.busy && UUID(uuidString: String(fields[2])) != nil ? String(fields[2]) : nil
+            }
+            if self.busy || self.uptime >= (self.pendingUntil ?? .infinity) {
+                self.pendingUntil = nil
+            }
+            if !self.isTransitioning ||
+                (self.activeOperation != nil && self.cancellationTarget != nil && self.activeOperation != self.cancellationTarget) {
+                self.cancellation = nil
+                self.cancellationTarget = nil
+            }
+            self.updateDisplay()
+            self.cancelWhenReady()
+        }
+    }
+
+    private func toggleFromDesktop() {
+        if isTransitioning {
+            guard cancellation == nil else { return }
+            cancellation = .requested
+            cancellationTarget = activeOperation
+            updateDisplay()
+            cancelWhenReady()
+        } else {
+            run("toggle")
+        }
+    }
+
+    private func cancelWhenReady() {
+        guard busy, cancellation == .requested, let activeOperation else { return }
+        let target = cancellationTarget ?? activeOperation
+        guard target == activeOperation else { return }
+        cancellationTarget = target
+        cancellation = .sending
+        runMonitor(["cancel", target]) { [weak self] code, _ in
+            guard let self, self.cancellation == .sending, self.cancellationTarget == target else { return }
+            switch code {
+            case 0:
+                self.cancellation = .sent
+                self.refreshStatus()
+            case 3:
+                self.cancellation = .requested
+            default:
+                self.cancellation = nil
+                self.cancellationTarget = nil
+                self.updateDisplay()
+                self.report("无法中止这次操作，请在它的终端窗口按 Ctrl+C。")
+            }
         }
     }
 
@@ -138,8 +191,10 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         let connected = state == .connected
         let phase = isTransitioning ? ((uptime - animationStarted) / 1.5).truncatingRemainder(dividingBy: 1) : nil
         let hint: String
-        if isTransitioning {
-            hint = "正在切换集团 VPN，请查看终端进度"
+        if cancellation != nil {
+            hint = "正在取消本次 VPN 操作"
+        } else if isTransitioning {
+            hint = "正在切换集团 VPN，单击桌面图标取消"
         } else {
             switch state {
             case .connected: hint = "集团 VPN 已连接，单击桌面图标关闭"
