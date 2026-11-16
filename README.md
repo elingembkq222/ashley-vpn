@@ -26,8 +26,8 @@ ashleyvpn
 
 ## 使用
 
-- **开启 VPN**：每次安装后首次开启时，若 GlobalProtect 正在运行或处于暂停状态，先完全关闭它，再加入小写 `officewifi`。等网络就绪后启动 GlobalProtect。需要 Wi-Fi 密码时在终端输入，字符不会回显。每次输入只尝试连接一次，失败后会重新提示输入，直接按回车可以取消。完成 GlobalProtect 的登录后，终端等到确认隧道建立才报告连接成功。
-- **关闭 VPN**：停止 GlobalProtect。检测到可用的有线网络时保留当前网络设置。仅在没有可用有线网络且这台 Mac 已配置大写 `OfficeWiFi` 时，才尝试切回它。本次安装第一次需要停用或卸载 GlobalProtect 的系统服务时，终端由 macOS `sudo` 提示验证一次本机管理员密码。已经停止的 VPN 会跳过关闭，已在 `OfficeWiFi` 时也会跳过切网。
+- **开启 VPN**：每次安装后首次开启时，若 GlobalProtect 正在运行或处于暂停状态，先完全关闭它。有可用的有线网络时直接启动 GlobalProtect，否则等小写 `officewifi` 就绪后再启动。需要 Wi-Fi 密码时在终端输入，字符不会回显。每次输入只尝试连接一次，失败后会重新提示输入，直接按回车可以取消。完成 GlobalProtect 的登录后，终端等到确认隧道建立才报告连接成功。
+- **关闭 VPN**：停止 GlobalProtect。有线网络可用、macOS 系统 VPN 已连接，或已在大写 `OfficeWiFi` 时，保留当前网络设置。其他情况下，若这台 Mac 已配置 `OfficeWiFi`，才尝试切回它。本次安装第一次需要停用或卸载 GlobalProtect 的系统服务时，终端由 macOS `sudo` 提示验证一次本机管理员密码。已经停止的 VPN 会跳过关闭。
 - 连接和关闭都在独立的终端窗口显示进度。命令完成或取消后，这个窗口自动关闭。一次只执行一个操作。
 
 Ashley VPN 在钥匙串中为两个 Wi-Fi 分别保存连接成功的凭据。每次运行安装脚本都会生成新的安装 ID，新安装不会使用前一次安装的 Wi-Fi 记录。macOS 只记住停止指定 GlobalProtect 服务的授权，不会让应用读取或保存本机管理员密码。升级或重装后，旧授权失效。
