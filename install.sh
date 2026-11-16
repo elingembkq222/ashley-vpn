@@ -39,13 +39,25 @@ build_certificate_checker() {
 }
 
 show_certificate_help() {
+  local globalprotect='/Applications/GlobalProtect.app'
+  local pangps="$globalprotect/Contents/Resources/PanGPS"
+  local system_keychain='/Library/Keychains/System.keychain'
+  # Show the paths users can paste into Finder's file chooser on this Mac.
+  globalprotect=${globalprotect:A}
+  pangps=${pangps:A}
   print -ru2 -- '可在「钥匙串访问 → 系统 → 集团 VPN 客户端证书 → 私钥 → 访问控制」核对权限。'
+  print -ru2 -- '在访问控制里点「+」，按 ⇧⌘G，粘贴缺少的应用路径：'
+  print -ru2 -- "$globalprotect"
+  print -ru2 -- "$pangps"
   [[ -t 2 && -z "${SSH_CONNECTION:-}" ]] || return 0
   local action
-  if action=$(/usr/bin/osascript - "$1" 2>/dev/null <<'APPLESCRIPT'
+  if action=$(/usr/bin/osascript - "$1" "$system_keychain" "$globalprotect" "$pangps" 2>/dev/null <<'APPLESCRIPT'
 on run argv
     set summary to item 1 of argv
-    set instructions to "在「系统」钥匙串里展开集团 VPN 客户端证书，打开其私钥的「访问控制」，保留「允许访问之前确认」。" & return & return & "点 + 补上缺少的应用：" & return & "/Applications/GlobalProtect.app" & return & "/Applications/GlobalProtect.app/Contents/Resources/PanGPS" & return & return & "如果两项都在，但每次仍弹窗，请核对「询问钥匙串密码」。若它是此次升级后才开启的，可恢复原设置。最后点「存储更改」，按 macOS 提示验证。"
+    set keychainPath to item 2 of argv
+    set globalProtectPath to item 3 of argv
+    set panGPSPath to item 4 of argv
+    set instructions to "在「系统」钥匙串里展开集团 VPN 客户端证书，打开其私钥的「访问控制」，保留「允许访问之前确认」。" & return & keychainPath & return & return & "点 + 后按 ⇧⌘G，粘贴本机缺少的应用路径（也显示在终端）：" & return & globalProtectPath & return & panGPSPath & return & return & "如果两项都在，但每次仍弹窗，请核对「询问钥匙串密码」。若它是此次升级后才开启的，可恢复原设置。最后点「存储更改」，按 macOS 提示验证。"
     set choice to display dialog (summary & return & return & instructions) with title "Ashley VPN · 集团证书权限" buttons {"稍后处理", "打开钥匙串访问"} default button "打开钥匙串访问" cancel button "稍后处理"
     return button returned of choice
 end run
