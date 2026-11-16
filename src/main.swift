@@ -234,16 +234,24 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 
     private func run(_ action: String) {
         guard !isTransitioning else { return }
-        guard let command = Bundle.main.url(forResource: action, withExtension: "command") else {
+        guard let runner = Bundle.main.url(forResource: "run-vpn", withExtension: "zsh") else {
             report("安装内容不完整，请重新运行 install.sh。")
+            return
+        }
+        let session: TerminalSession
+        do {
+            session = try TerminalSession(runner: runner, action: action)
+        } catch {
+            report("无法创建本次操作的终端会话。\(error.localizedDescription)")
             return
         }
         pendingUntil = uptime + 4
         updateDisplay()
         let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
-        NSWorkspace.shared.open([command], withApplicationAt: terminal, configuration: .init()) { _, error in
+        NSWorkspace.shared.open([session.profile], withApplicationAt: terminal, configuration: .init()) { _, error in
             Task { @MainActor in
                 if let error {
+                    try? FileManager.default.removeItem(at: session.directory)
                     self.pendingUntil = nil
                     self.updateDisplay()
                     self.report("无法打开终端。\(error.localizedDescription)")

@@ -23,7 +23,7 @@ process_start() {
 }
 
 cancel_operation() {
-  local token pid action started group command
+  local token pid action started group command script
   if zsystem flock -t 0 -f idle_fd "$ASHLEY_VPN_STATE/operation.lock" 2>/dev/null; then
     zsystem flock -u "$idle_fd"
     return 3
@@ -37,8 +37,10 @@ cancel_operation() {
   command=$(/bin/ps -ww -p "$pid" -o command=)
   # A Terminal .command runs in its own foreground job. Never signal the
   # login shell, a reused PID, or GlobalProtect processes owned by launchd.
-  [[ "$group" == "$pid" &&
-     "$command" == "/bin/zsh -f $ASHLEY_VPN_RESOURCES/run-vpn.zsh $action" ]] || return 2
+  [[ "$group" == "$pid" && "$command" == "/bin/zsh -f "*" $action" ]] || return 2
+  script=${command#"/bin/zsh -f "}
+  script=${script%" $action"}
+  [[ "${script:A}" == "$ASHLEY_VPN_RESOURCES/run-vpn.zsh" ]] || return 2
   /bin/kill -INT -- "-$pid"
 }
 
