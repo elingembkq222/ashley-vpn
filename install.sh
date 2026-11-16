@@ -58,8 +58,9 @@ MACOSX_DEPLOYMENT_TARGET=12.0 /usr/bin/xcrun swiftc -parse-as-library -O "$root/
 MACOSX_DEPLOYMENT_TARGET=12.0 /usr/bin/xcrun swiftc -O "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
 /usr/bin/codesign --force --deep --sign - "$app"
 /usr/bin/codesign --verify --deep --strict "$app"
+/bin/zsh -f "$root/src/install-cli.zsh"
 
-# Restart only the menu icon. An ongoing VPN tunnel stays with GlobalProtect.
+# Replace only the menu app. An ongoing VPN tunnel stays with GlobalProtect.
 if [[ -d "$target" ]]; then
   /usr/bin/pkill -u "$(/usr/bin/id -u)" -x ashley-vpn-menu || true
   /bin/mv "$target" "$stage/previous.app"
@@ -80,5 +81,4 @@ if [[ -x "$previous_keychain" ]]; then
   done
 fi
 
-/usr/bin/open -g "$target"
-print -r -- '已安装并启动 Ashley VPN。请在 macOS 菜单栏点击盾牌图标。'
+print -r -- 'Ashley VPN 已安装。打开新的终端窗口，运行 ashleyvpn 启动菜单栏图标。'
