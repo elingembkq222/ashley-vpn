@@ -119,6 +119,10 @@ _gp-authorize-stop() {
   if (( gpStatus != 77 )) && [[ "$gpOutput" != 'sudo: a password is required' &&
       "$gpOutput" != "sudo: $gpHelper: command not found" ]]; then
     print -ru2 -- "$gpOutput"
+    if [[ -t 2 ]]; then
+      print -ru2 -- '无法检查停止授权。终端将在 12 秒后关闭。'
+      /bin/sleep 12
+    fi
     return "$gpStatus"
   fi
   if [[ ! -t 0 || ! -t 2 || ! -r "$gpInstaller" ]]; then
@@ -127,8 +131,14 @@ _gp-authorize-stop() {
   fi
 
   print -r -- '本次安装首次关闭需验证一次本机密码，仅授权停用和卸载此 GlobalProtect 服务。'
-  /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller" || return
-  LC_ALL=C /usr/bin/sudo -kn -- "$gpHelper" check
+  if /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller" &&
+     LC_ALL=C /usr/bin/sudo -kn -- "$gpHelper" check; then
+    print -r -- '系统服务停止授权已确认。'
+    return 0
+  fi
+  print -ru2 -- '停止授权未完成，请查看上方的 sudo 或系统提示。终端将在 12 秒后关闭。'
+  /bin/sleep 12
+  return 1
 }
 
 _gp-already-stopped() {
@@ -250,11 +260,55 @@ gp-status() {
 }
 
 # --- 自动切换网络(2026-11-16 新增) ---
-# officewifi(小写):连接集团 VPN 时所在的网络;OfficeWiFi(大写):VPN 断开后自动切回的日常网络。
+# officewifi 用于连接集团 VPN，OfficeWiFi 是断开后可选的日常网络。
 
 GP_VPN_WIFI='officewifi'
 GP_HOME_WIFI='OfficeWiFi'
 GP_WIFI_IFACE='en0'
+
+_gp-net-wired-ready() {
+  emulate -L zsh
+  local gpPorts gpRoutes gpInterface
+  gpPorts=$(LC_ALL=C /usr/sbin/networksetup -listallhardwareports 2>/dev/null | /usr/bin/awk '
+    /^Hardware Port: / { wifi = ($0 ~ /^Hardware Port: (Wi-Fi|AirPort)$/) }
+    /^Device: en[0-9]+$/ && !wifi { print $2 }
+  ')
+  [[ -n "$gpPorts" ]] || return 1
+  gpRoutes=$(LC_ALL=C /usr/sbin/netstat -rn 2>/dev/null) || return 1
+  for gpInterface in ${(f)gpPorts}; do
+    if /usr/bin/awk -v dev="$gpInterface" '
+         $1 == "default" && $3 ~ /^U.*G/ && $4 == dev { found = 1 }
+         END { exit !found }
+       ' <<< "$gpRoutes" &&
+       LC_ALL=C /sbin/ifconfig "$gpInterface" 2>/dev/null | /usr/bin/grep -q '^[[:space:]]*status: active$'; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+gp-disconnect() {
+  emulate -L zsh
+  gp-stop || return
+  if _gp-net-wired-ready; then
+    print -r -- '检测到有线网络，保留当前网络设置。'
+  elif [[ "$(gp-net-current-ssid)" == "$GP_HOME_WIFI" ]]; then
+    print -r -- "当前已在 $GP_HOME_WIFI。"
+  elif [[ -r "$ASHLEY_VPN_STATE/home-wifi-profile" ]] ||
+       LC_ALL=C /usr/sbin/networksetup -listpreferredwirelessnetworks "$GP_WIFI_IFACE" 2>/dev/null |
+         /usr/bin/awk -v ssid="$GP_HOME_WIFI" '
+           { sub(/^[[:space:]]+/, "") }
+           $0 == ssid { found = 1 }
+           END { exit !found }
+         '; then
+    if ! wifi-switch "$GP_HOME_WIFI"; then
+      print -ru2 -- "VPN 已关闭，未切换到 $GP_HOME_WIFI。"
+    fi
+  else
+    print -r -- "这台 Mac 未配置 $GP_HOME_WIFI，保留当前网络设置。"
+  fi
+  return 0
+}
 
 _gp-net-active-profile() {
   emulate -L zsh
