@@ -2,7 +2,8 @@ import Foundation
 import Security
 
 private let args = CommandLine.arguments
-guard args.count == 3, ["join", "save", "forget"].contains(args[1]),
+guard args.count >= 3, ["join", "save", "forget"].contains(args[1]),
+      args.count == 3 || (args[1] == "join" && args.count == 4),
       ["officewifi", "OfficeWiFi"].contains(args[2]) else {
     exit(2)
 }
@@ -29,6 +30,8 @@ if args[1] == "forget" {
     exit(result == errSecSuccess || result == errSecItemNotFound ? 0 : 1)
 }
 if args[1] == "join" {
+    let interface = args.count == 4 ? args[3] : "en0"
+    guard interface.range(of: "^en[0-9]+$", options: .regularExpression) != nil else { exit(2) }
     var match: CFTypeRef?
     var request = query
     request[kSecReturnData as String] = true
@@ -38,7 +41,7 @@ if args[1] == "join" {
     let input = Pipe()
     let command = Process()
     command.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-    command.arguments = ["-setairportnetwork", "en0", args[2], "-"]
+    command.arguments = ["-setairportnetwork", interface, args[2], "-"]
     command.standardInput = input
     do {
         try command.run()
