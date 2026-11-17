@@ -8,10 +8,19 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private enum Cancellation {
         case requested, sending, sent
     }
+    private struct ProxyApps: Equatable {
+        let codex: pid_t
+        let libCyber: pid_t
+    }
 
     private var item: NSStatusItem?
     private var menuStatus: NSMenuItem?
     private var menuCancel: NSMenuItem?
+    private var menuCodexProxy: NSMenuItem?
+    private var proxyApps: ProxyApps?
+    private var proxyStatus: String?
+    private var proxyCheck: Task<Void, Never>?
+    private var lastProxyCheck: TimeInterval?
     private var orb: FloatingOrb?
     private lazy var connectedMenuIcon = menuIcon(named: "MenuIcon")
     private lazy var disabledMenuIcon = menuIcon(named: "MenuIconDisabled")
@@ -66,6 +75,10 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         let status = NSMenuItem(title: "Ashley VPN", action: nil, keyEquivalent: "")
         menu.addItem(status)
         menuStatus = status
+        let proxy = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        menu.addItem(proxy)
+        menuCodexProxy = proxy
+        updateProxyMenu()
         menu.addItem(.separator())
         addItem("开启 VPN", action: #selector(connect), to: menu)
         addItem("关闭 VPN", action: #selector(disconnect), to: menu)
@@ -180,7 +193,51 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             }
             self.updateDisplay()
             self.cancelWhenReady()
+            self.refreshCodexProxy()
         }
+    }
+
+    private func refreshCodexProxy() {
+        guard state == .connected, !isTransitioning,
+              let codex = NSRunningApplication.runningApplications(withBundleIdentifier: CodexProxyStatus.codexIdentifier).first,
+              let libCyber = NSRunningApplication.runningApplications(withBundleIdentifier: CodexProxyStatus.libCyberIdentifier).first,
+              let codexURL = codex.bundleURL, let libCyberURL = libCyber.bundleURL else {
+            if proxyApps != nil { resetProxyCheck() }
+            return
+        }
+
+        let apps = ProxyApps(codex: codex.processIdentifier, libCyber: libCyber.processIdentifier)
+        if apps != proxyApps {
+            resetProxyCheck()
+            proxyApps = apps
+            proxyStatus = "正在检查 Codex 与 LibCyber"
+            updateProxyMenu()
+        }
+        guard proxyCheck == nil, uptime - (lastProxyCheck ?? -.infinity) >= 5 else { return }
+        lastProxyCheck = uptime
+        proxyCheck = Task { [weak self] in
+            let status = await Task.detached(priority: .utility) {
+                CodexProxyStatus.check(codex: codexURL, libCyber: libCyberURL)
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.proxyCheck = nil
+            self.proxyStatus = status.rawValue
+            self.updateProxyMenu()
+        }
+    }
+
+    private func resetProxyCheck() {
+        proxyCheck?.cancel()
+        proxyCheck = nil
+        proxyApps = nil
+        proxyStatus = nil
+        lastProxyCheck = nil
+        updateProxyMenu()
+    }
+
+    private func updateProxyMenu() {
+        menuCodexProxy?.title = proxyStatus ?? ""
+        menuCodexProxy?.isHidden = proxyStatus == nil
     }
 
     private func toggleFromDesktop() {
