@@ -8,10 +8,15 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private enum Cancellation {
         case requested, sending, sent
     }
-
     private var item: NSStatusItem?
     private var menuStatus: NSMenuItem?
     private var menuCancel: NSMenuItem?
+    private var menuCodexProxy: NSMenuItem?
+    private var codexPID: pid_t?
+    private var selectedProxy: String?
+    private var proxyRoutes: [CodexProxyStatus.Route] = []
+    private var proxyCheck: Task<Void, Never>?
+    private var lastProxyCheck: TimeInterval?
     private var orb: FloatingOrb?
     private lazy var connectedMenuIcon = menuIcon(named: "MenuIcon")
     private lazy var disabledMenuIcon = menuIcon(named: "MenuIconDisabled")
@@ -63,13 +68,19 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         let status = NSMenuItem(title: "Ashley VPN", action: nil, keyEquivalent: "")
+        status.isEnabled = false
         menu.addItem(status)
         menuStatus = status
         menu.addItem(.separator())
         addItem("开启 VPN", action: #selector(connect), to: menu)
         addItem("关闭 VPN", action: #selector(disconnect), to: menu)
         menuCancel = addItem("取消本次操作", action: #selector(cancelFromMenu), to: menu)
+        let proxy = NSMenuItem(title: "Codex 专用流量", action: nil, keyEquivalent: "")
+        menu.addItem(proxy)
+        menuCodexProxy = proxy
+        updateProxyMenu()
         menu.addItem(.separator())
         if let orb {
             addItem(orb.isVisible ? "隐藏桌面图标" : "显示桌面图标", action: #selector(toggleOrb), to: menu)
@@ -180,7 +191,85 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             }
             self.updateDisplay()
             self.cancelWhenReady()
+            self.refreshCodexProxy()
         }
+    }
+
+    private func refreshCodexProxy() {
+        let codex = NSRunningApplication.runningApplications(withBundleIdentifier: CodexProxyStatus.codexIdentifier).first
+        if codex?.processIdentifier != codexPID {
+            resetProxyCheck()
+            codexPID = codex?.processIdentifier
+            updateProxyMenu()
+        }
+        guard let codexURL = codex?.bundleURL, proxyCheck == nil,
+              uptime - (lastProxyCheck ?? -.infinity) >= 5 else { return }
+        lastProxyCheck = uptime
+        proxyCheck = Task { [weak self] in
+            let routes = await Task.detached(priority: .utility) {
+                CodexProxyStatus.routes(codex: codexURL)
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.proxyCheck = nil
+            guard routes != self.proxyRoutes else { return }
+            self.proxyRoutes = routes
+            if !routes.contains(where: { $0.id == self.selectedProxy }) {
+                self.selectedProxy = nil
+            }
+            self.updateProxyMenu()
+        }
+    }
+
+    private func resetProxyCheck() {
+        proxyCheck?.cancel()
+        proxyCheck = nil
+        proxyRoutes = []
+        selectedProxy = nil
+        lastProxyCheck = nil
+    }
+
+    private func updateProxyMenu() {
+        guard let menuCodexProxy else { return }
+        menuCodexProxy.isEnabled = codexPID != nil
+        guard menuCodexProxy.isEnabled else {
+            menuCodexProxy.submenu = nil
+            menuCodexProxy.toolTip = "Codex 尚未启动"
+            return
+        }
+        menuCodexProxy.toolTip = nil
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let none = addItem("无", action: #selector(selectCodexProxy(_:)), to: menu)
+        none.state = selectedProxy == nil ? .on : .off
+        none.toolTip = "保持 Codex 当前网络配置"
+
+        if !proxyRoutes.isEmpty { menu.addItem(.separator()) }
+        for route in proxyRoutes {
+            let title: String
+            let selectable: Bool
+            switch route.kind {
+            case .localProxy(true):
+                title = "\(route.name) · Codex 已连接"
+                selectable = true
+            case .localProxy(false):
+                title = "\(route.name) · 未检测到 Codex 连接"
+                selectable = false
+            case .systemVPN:
+                title = "\(route.name) · 无单应用代理接口"
+                selectable = false
+            }
+            let item = addItem(title, action: #selector(selectCodexProxy(_:)), to: menu)
+            item.representedObject = route.id
+            item.isEnabled = selectable
+            item.state = route.id == selectedProxy ? .on : .off
+        }
+        menuCodexProxy.submenu = menu
+    }
+
+    @objc private func selectCodexProxy(_ item: NSMenuItem) {
+        guard codexPID != nil, item.isEnabled else { return }
+        selectedProxy = item.representedObject as? String
+        updateProxyMenu()
     }
 
     private func toggleFromDesktop() {

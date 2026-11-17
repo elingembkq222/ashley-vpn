@@ -318,7 +318,7 @@ resources="$app/Contents/Resources"
 
 MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '正在构建 Ashley VPN…' '构建 Ashley VPN 主程序失败' /usr/bin/xcrun swiftc -parse-as-library -O \
   "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" \
-  "$root/src/WiFiScan.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
+  "$root/src/WiFiScan.swift" "$root/src/CodexProxyStatus.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
 MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '正在构建钥匙串组件…' '构建钥匙串组件失败' /usr/bin/xcrun swiftc -O \
   "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
 run_build_step '正在构建证书权限组件…' '构建集团 VPN 证书权限组件失败' compile_certificate_checker
