@@ -22,6 +22,82 @@ install_paint() {
   fi
 }
 
+install_panel_cell() {
+  local label="$1" width="$2" style="$3"
+  if (( ${(m)#label} > width )); then
+    local limit=$((width - 1))
+    label="${(mr:$limit:)label}…"
+  fi
+  install_paint "$style" "$label"
+  printf '%*s' "$((width - ${(m)#label}))" ''
+}
+
+install_welcome_panel() {
+  local release="$1" title='Ashley VPN'
+  [[ -z "$release" ]] || title+=" v$release"
+  local primary='安装 Ashley VPN' details='检查安装条件和集团 VPN 证书权限'
+  local next_title='启动应用' next_step='在新终端运行 ashleyvpn'
+  case "$mode" in
+    --check)
+      primary='检查安装条件' details='macOS、GlobalProtect 和 Swift 工具链'
+      next_title='检查安装位置' next_step='确认「应用程序」目录可写入'
+      ;;
+    --repair-keychain|--restore-keychain-prompt)
+      primary='修复集团 VPN 证书权限' details='检查系统钥匙串中的 VPN 私钥'
+      next_title='管理员验证' next_step='仅在需要修改授权时提示输入密码'
+      ;;
+  esac
+
+  local rows columns=0 width rule='' top left_width=20 right_width index
+  if [[ -t 1 && "${TERM:-dumb}" != dumb ]]; then
+    read -r rows columns <<< "$(/bin/stty -f /dev/tty size 2>/dev/null || printf '0 %s' "${COLUMNS:-80}")"
+  fi
+  if [[ "$columns" != <-> ]] || (( columns < 36 )); then
+    printf '\n  '
+    install_paint "$install_accent" "✻ $title"
+    printf '  ·  %s\n' "$primary"
+    return
+  fi
+
+  (( width = columns > 100 ? 96 : columns - 4 ))
+  top="╭── $title "
+  local top_rule=$((width - ${(m)#top} - 1))
+  local bottom_rule=$((width - 2))
+  printf '\n'
+  install_paint "$install_accent" "  $top${(l:$top_rule::─:)rule}╮"
+  printf '\n'
+
+  local -a art=(
+    '        ▄  ▄'
+    '      ▄ █  █ ▄'
+    '      █  ▄▄  █'
+    '        ████'
+    '        ▀▀▀▀'
+  )
+  local -a content=("  $primary" "  $details" '' "  $next_title" "  $next_step")
+  local -a styles=("$install_accent" '0' '2' "$install_accent" '0')
+  if (( width >= 64 )); then
+    right_width=$((width - left_width - 3))
+  else
+    right_width=$bottom_rule
+  fi
+  local divider=$((right_width - 4))
+  content[3]="  ${(l:$divider::─:)rule}"
+
+  for (( index = 1; index <= ${#content}; index++ )); do
+    install_paint "$install_accent" '  │'
+    if (( width >= 64 )); then
+      install_panel_cell "$art[index]" "$left_width" "$install_accent"
+      install_paint "$install_accent" '│'
+    fi
+    install_panel_cell "$content[index]" "$right_width" "$styles[index]"
+    install_paint "$install_accent" '│'
+    printf '\n'
+  done
+  install_paint "$install_accent" "  ╰${(l:$bottom_rule::─:)rule}╯"
+  printf '\n'
+}
+
 install_section() {
   printf '\n  '
   install_paint '2' '──'
@@ -238,14 +314,12 @@ check_application_directory() {
   install_message done '应用程序目录可写入'
 }
 
-printf '\n'
-install_paint "$install_accent" '  ✻ Ashley VPN'
-install_paint '2' '  ·  安装程序'
-printf '\n'
-install_section '安装检查'
 if [[ "$(/usr/bin/uname -s)" != Darwin ]]; then
   fail_check '操作系统：Ashley VPN 需要 macOS 12 或更新版本。'
 fi
+latest_version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$root/src/Info.plist" 2>/dev/null) || latest_version=''
+install_welcome_panel "$latest_version"
+install_section '安装检查'
 version=$(/usr/bin/sw_vers -productVersion) || fail_check '操作系统：无法读取 macOS 版本。'
 major=${version%%.*}
 if [[ "$major" != <-> ]] || (( major < 12 )); then
@@ -254,8 +328,7 @@ fi
 install_message done "macOS $version"
 
 if [[ -z "${1:-}" ]]; then
-  latest_version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$root/src/Info.plist") ||
-    fail_check '无法读取安装包版本。'
+  [[ -n "$latest_version" ]] || fail_check '无法读取安装包版本。'
   latest_build=$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$root/src/Info.plist") ||
     fail_check '无法读取安装包构建号。'
 fi
