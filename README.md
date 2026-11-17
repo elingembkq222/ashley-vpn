@@ -24,7 +24,7 @@ If the private key was inadvertently set to prompt for a password on every use, 
 
 ## Connect
 
-Open a new Terminal window and run `ashleyvpn`. Use the menu bar icon or click the floating desktop icon to connect or disconnect. Follow the Terminal prompts to select Wi-Fi and complete GlobalProtect sign-in when needed. The icon turns orange when the VPN tunnel is up.
+Open a Terminal window and run `ashleyvpn`. Use the menu bar or floating desktop icon to connect or disconnect. Terminal opens when Wi-Fi selection, a password, or administrator approval is needed. Connection and shutdown progress appear by the floating icon and on the menu bar. The icon turns orange when the VPN tunnel is up.
 
 ## Uninstall
 

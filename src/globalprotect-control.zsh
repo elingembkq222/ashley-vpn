@@ -18,6 +18,11 @@ _gp-progress-run() {
   emulate -L zsh
   local gpMessage="$1" gpTicker gpStatus
   shift
+  if [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]]; then
+    _gp-gui-progress "$gpMessage"
+    "$@"
+    return
+  fi
   if [[ ! -t 2 ]]; then
     "$@"
     return
@@ -84,8 +89,12 @@ gp-start() {
     return 1
   fi
   if (( gpSystemLoaded )); then
-    _gp-start-service system com.paloaltonetworks.gp.pangpsd \
-      /Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist || return
+    if [[ "$ASHLEY_VPN_BACKGROUND" == 1 && ! -t 0 ]]; then
+      _gp-terminal-input start-system || return
+    else
+      _gp-start-service system com.paloaltonetworks.gp.pangpsd \
+        /Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist || return
+    fi
   else
     _gp-start-service "$gpGui" com.paloaltonetworks.gp.pangps \
       /Library/LaunchAgents/com.paloaltonetworks.gp.pangps.plist || return
@@ -105,10 +114,17 @@ gp-start() {
   return 1
 }
 
+_gp-authorize-stop() {
+  emulate -L zsh
+  local gpInstaller="$ASHLEY_VPN_RESOURCES/setup-stop-authorization.sh"
+  [[ -t 0 && -t 2 && -r "$gpInstaller" ]] || return 1
+  print -r -- '停止 GlobalProtect 系统服务需要管理员验证。'
+  /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller"
+}
+
 _gp-stop-system-service() {
   emulate -L zsh
   local gpSystemJob="$1" gpOutput gpStatus
-  local gpInstaller="$ASHLEY_VPN_RESOURCES/setup-stop-authorization.sh"
   local gpHelper=/private/etc/ashley-vpn-stop
 
   gpOutput=$(LC_ALL=C /usr/bin/sudo -kn -- "$gpHelper" check 2>&1)
@@ -124,24 +140,13 @@ _gp-stop-system-service() {
   if (( gpStatus != 77 )) && [[ "$gpOutput" != 'sudo: a password is required' &&
       "$gpOutput" != "sudo: $gpHelper: command not found" ]]; then
     print -ru2 -- "$gpOutput"
-    if [[ -t 2 ]]; then
-      print -ru2 -- '无法检查停止授权。终端将在 12 秒后关闭。'
-      /bin/sleep 12
-    fi
     return "$gpStatus"
   fi
-  if [[ ! -t 0 || ! -t 2 || ! -r "$gpInstaller" ]]; then
-    print -u2 -- '请从菜单栏 Ashley VPN 选择「关闭 VPN」，并在终端完成 macOS 验证。'
-    return 1
+  if [[ "$ASHLEY_VPN_BACKGROUND" == 1 && ! -t 0 ]]; then
+    _gp-terminal-input stop-system
+  else
+    _gp-authorize-stop
   fi
-
-  print -r -- '停止 GlobalProtect 系统服务需要管理员验证，验证后将执行本次关闭。'
-  if /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller"; then
-    return 0
-  fi
-  print -ru2 -- '未能完成授权或停止系统服务，请查看上方的提示。终端将在 12 秒后关闭。'
-  /bin/sleep 12
-  return 1
 }
 
 _gp-already-stopped() {
@@ -169,6 +174,7 @@ gp-stop() {
     print -r -- 'GlobalProtect 已停止。'
     return 0
   fi
+  [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '正在关闭 GlobalProtect'
   print -r -- '正在关闭 GlobalProtect…'
   local gpGui="gui/$EUID"
   local gpSystemJob='system/com.paloaltonetworks.gp.pangpsd' gpSystemDisabled
@@ -181,12 +187,11 @@ gp-stop() {
   fi
   _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangpa" || return
   _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangps" || return
-  local gpTarget gpUnloadAttempt gpBootout gpStep
+  local gpTarget gpBootout gpStep
   for gpTarget in \
     "$gpGui/com.paloaltonetworks.gp.pangpa" \
-    "$gpGui/com.paloaltonetworks.gp.pangps" \
-    "$gpSystemJob"; do
-    if [[ "$gpTarget" != "$gpSystemJob" ]] && /bin/launchctl print "$gpTarget" >/dev/null 2>&1; then
+    "$gpGui/com.paloaltonetworks.gp.pangps"; do
+    if /bin/launchctl print "$gpTarget" >/dev/null 2>&1; then
       case "$gpTarget" in
         */com.paloaltonetworks.gp.pangpa) gpStep='正在退出 GlobalProtect 界面' ;;
         *) gpStep='正在停止 GlobalProtect 服务并断开 VPN' ;;
@@ -197,28 +202,22 @@ gp-stop() {
         return "$gpBootout"
       fi
     fi
-    # bootout may return before launchd finishes the configured exit timeout.
-    for gpUnloadAttempt in {1..25}; do
-      /bin/launchctl print "$gpTarget" >/dev/null 2>&1 || break
-      (( gpUnloadAttempt == 1 || gpUnloadAttempt % 5 == 0 )) &&
-        print -ru2 -- "正在等待 GlobalProtect 完成退出…"
-      /bin/sleep 1
-    done
-    if /bin/launchctl print "$gpTarget" >/dev/null 2>&1; then
-      print -u2 -- "服务卸载后仍可查询：$gpTarget"
-      return 1
-    fi
   done
-  local gpAttempt
-  for gpAttempt in {1..5}; do
+
+  # bootout can return before launchd completes teardown. Check all jobs and
+  # processes together so a stopped VPN finishes as soon as cleanup completes.
+  [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '正在确认 GlobalProtect 已退出'
+  local gpDeadline=$((SECONDS + 25))
+  while true; do
     if _gp-already-stopped; then
       print -- '关闭完成：VPN 已断开，GlobalProtect 已停止。'
       return 0
     fi
-    /bin/sleep 1
+    (( SECONDS < gpDeadline )) || break
+    /bin/sleep 0.25
   done
-  print -u2 -- '服务已卸载并禁用，但仍有 GlobalProtect/PanGPS 进程残留；未确认完全停止。'
   gp-status
+  print -u2 -- '未能确认 GlobalProtect 进程和服务已完全退出。'
   return 1
 }
 
@@ -312,9 +311,6 @@ gp-check-connect-network() {
   done
   print -ru2 -- '当前仅有线网络已连接，且 macOS 系统 VPN 正在运行。'
   print -ru2 -- '请在「系统设置 → VPN」手动关闭系统 VPN，再重新开启集团 VPN。'
-  if [[ -t 2 ]]; then
-    /bin/sleep 12
-  fi
   return 1
 }
 
@@ -511,6 +507,13 @@ _gp-select-wifi() {
       (( ${gpNetworks[(Ie)$gpName]} )) && gpOrdered+=("$gpName")
     done
 
+    if [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]]; then
+      if [[ "$gpMode" == disconnect ]]; then
+        _gp-gui-progress 'VPN 已关闭，请在终端选择 Wi-Fi'
+      else
+        _gp-gui-progress '请在终端选择 Wi-Fi'
+      fi
+    fi
     while true; do
       gpResult=0
       _gp-wifi-picker "$gpCurrent" "$gpKeep" "$gpFallback" "${gpOrdered[@]}" || gpResult=$?
@@ -532,24 +535,32 @@ _gp-select-wifi() {
 gp-disconnect() {
   emulate -L zsh
   gp-stop || return
-  local GP_WIFI_IFACE REPLY gpSelection=0
   if _gp-net-wired-ready; then
     print -r -- '检测到有线网络，保留当前网络设置。'
   elif _gp-net-system-vpn-connected; then
     print -r -- '检测到 macOS 系统 VPN 已连接，保留当前网络设置。'
-  elif ! GP_WIFI_IFACE=$(_gp-net-interfaces wifi | /usr/bin/head -n 1) ||
-       [[ -z "$GP_WIFI_IFACE" ]]; then
+  elif [[ -z "$(_gp-net-interfaces wifi | /usr/bin/head -n 1)" ]]; then
     print -r -- '这台 Mac 没有可用的 Wi-Fi 接口，已结束关闭流程。'
+  elif [[ "$ASHLEY_VPN_BACKGROUND" == 1 && ! -t 0 ]]; then
+    _gp-terminal-input disconnect-wifi
   else
-    _gp-select-wifi disconnect || gpSelection=$?
-    (( gpSelection == 130 )) && return 130
-    if (( gpSelection != 0 )) || [[ -z "$REPLY" ]]; then
-      print -r -- 'VPN 已关闭，保留当前网络设置。'
-    elif ! wifi-switch "$REPLY"; then
-      print -ru2 -- 'VPN 已关闭，Wi-Fi 切换未完成。'
-    fi
+    _gp-disconnect-wifi
   fi
-  return 0
+}
+
+_gp-disconnect-wifi() {
+  emulate -L zsh
+  local GP_WIFI_IFACE REPLY gpSelection=0
+  GP_WIFI_IFACE=$(_gp-net-interfaces wifi | /usr/bin/head -n 1)
+  [[ -n "$GP_WIFI_IFACE" ]] || return 0
+  _gp-select-wifi disconnect || gpSelection=$?
+  (( gpSelection == 130 )) && return 130
+  if (( gpSelection != 0 )) || [[ -z "$REPLY" ]]; then
+    print -r -- 'VPN 已关闭，保留当前网络设置。'
+  elif ! wifi-switch "$REPLY"; then
+    print -ru2 -- 'VPN 已关闭，Wi-Fi 切换未完成。'
+    return 1
+  fi
 }
 
 gp-net-current-ssid() {
@@ -580,7 +591,7 @@ gp-net-current() {
 
 _gp-wifi-join() {
   emulate -L zsh
-  local gpSsid="$1" gpResult gpStatus gpCur
+  local gpSsid="$1" gpResult gpStatus
   shift
   # networksetup can print a join error and still exit zero. A lone "-" reads
   # the password from stdin instead of exposing it in the process arguments.
@@ -600,8 +611,8 @@ _gp-wifi-join() {
       *) return 1 ;;
     esac
   fi
-  gpCur=$(gp-net-current-ssid)
-  [[ -z "$gpCur" || "$gpCur" == '<redacted>' || "$gpCur" == "$gpSsid" ]] || return 3
+  # The join command can succeed before macOS reports the new SSID or route.
+  # Confirm the requested network in _gp-net-wait-wifi instead of re-prompting.
   return 0
 }
 
@@ -667,12 +678,13 @@ wifi-switch() {
   fi
   while true; do
     gpPassword=''
+    [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '请在终端输入 Wi-Fi 密码'
     if ! IFS= read -rs "gpPassword?请输入 $gpSsid 的 Wi-Fi 密码（输入时不显示，直接回车取消）："; then
       print -ru2 -- ''
-      return 1
+      return 130
     fi
     print -ru2 -- ''
-    [[ -n "$gpPassword" ]] || return 1
+    [[ -n "$gpPassword" ]] || return 130
     gpStatus=0
     print -r -- "$gpPassword" | _gp-progress-run "正在验证 Wi-Fi 密码并加入 $gpSsid" _gp-wifi-join "$gpSsid" - || gpStatus=$?
     (( gpStatus == 0 )) && break
@@ -693,20 +705,34 @@ wifi-switch() {
 _gp-net-wait-wifi() {
   emulate -L zsh
   local gpSsid="$1" gpAttempt gpCur gpReady=0
-  for gpAttempt in {1..20}; do
+  for gpAttempt in {1..30}; do
     gpCur=$(gp-net-current-ssid)
     if ! _gp-net-interface-active "$GP_WIFI_IFACE" ||
        [[ -n "$gpSsid" && -n "$gpCur" && "$gpCur" != '<redacted>' && "$gpCur" != "$gpSsid" ]]; then
       gpReady=0
-    elif /usr/sbin/ipconfig getifaddr "$GP_WIFI_IFACE" >/dev/null 2>&1 &&
-       /usr/sbin/ipconfig getoption "$GP_WIFI_IFACE" router >/dev/null 2>&1; then
+    elif _gp-wifi-route-ready; then
       (( ++gpReady >= 2 )) && return 0
     else
       gpReady=0
     fi
     /bin/sleep 1
   done
-  print -u2 -- "${gpSsid:-当前 Wi-Fi} 的连接尚未确认，或 Wi-Fi 尚未获得 IPv4 地址和路由。"
+  print -u2 -- "${gpSsid:-当前 Wi-Fi} 的连接尚未确认，或 Wi-Fi 尚未获得可用的网络路由。"
+  return 1
+}
+
+_gp-wifi-route-ready() {
+  local gpFamily
+  if /usr/sbin/ipconfig getifaddr "$GP_WIFI_IFACE" >/dev/null 2>&1 &&
+     /usr/sbin/ipconfig getoption "$GP_WIFI_IFACE" router >/dev/null 2>&1; then
+    return 0
+  fi
+  for gpFamily in -inet -inet6; do
+    if /sbin/route -n get "$gpFamily" -ifscope "$GP_WIFI_IFACE" default 2>/dev/null |
+       /usr/bin/awk -v interface="$GP_WIFI_IFACE" '$1 == "interface:" && $2 == interface { found=1 } END { exit !found }'; then
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -775,7 +801,8 @@ _gp-wait-vpn() {
   local gpTimeout="${1:-120}" gpStart="$SECONDS" gpElapsed gpState gpLast='' gpLabel
   local -a gpFrames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
   local gpStatus=1 gpLastTick=-10
-  print -r -- '正在等待 VPN 建立连接。如 GlobalProtect 弹出登录窗口，请在那里完成验证。'
+  [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]] ||
+    print -r -- '正在等待 VPN 建立连接。如 GlobalProtect 弹出登录窗口，请在那里完成验证。'
   {
     while (( SECONDS - gpStart < gpTimeout )); do
       gpElapsed=$((SECONDS - gpStart))
@@ -789,7 +816,9 @@ _gp-wait-vpn() {
         failed) gpLabel='客户端报告连接失败，等待客户端重试' ;;
         *) gpLabel='正在等待 GlobalProtect 连接' ;;
       esac
-      if [[ -t 2 ]]; then
+      if [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]]; then
+        _gp-gui-progress "$gpLabel · 最多再等 $((gpTimeout - gpElapsed)) 秒"
+      elif [[ -t 2 ]]; then
         printf >&2 '\r\033[2K%s %s… %s 秒' "${gpFrames[$((gpElapsed % ${#gpFrames} + 1))]}" "$gpLabel" "$gpElapsed"
       elif [[ "$gpState" != "$gpLast" ]] || (( gpElapsed - gpLastTick >= 10 )); then
         print -ru2 -- "$gpLabel… $gpElapsed 秒"
@@ -799,7 +828,7 @@ _gp-wait-vpn() {
       /bin/sleep 1
     done
   } always {
-    [[ ! -t 2 ]] || printf >&2 '\r\033[2K'
+    [[ "$ASHLEY_VPN_BACKGROUND" == 1 || ! -t 2 ]] || printf >&2 '\r\033[2K'
   }
   if (( gpStatus == 0 )); then
     print -r -- "VPN 已连接，隧道已建立（等待 $((SECONDS - gpStart)) 秒）。"
@@ -809,40 +838,44 @@ _gp-wait-vpn() {
   return 1
 }
 
+_gp-reset-first-connection() {
+  if [[ "$1" == reset ]] && ! _gp-already-stopped; then
+    print -r -- '首次连接前检测到 GlobalProtect 正在运行，正在关闭现有服务…'
+    gp-stop || return
+  fi
+}
+
+_gp-connect-wifi() {
+  emulate -L zsh
+  local GP_WIFI_IFACE REPLY gpSsid
+  GP_WIFI_IFACE=$(_gp-net-interfaces wifi | /usr/bin/head -n 1)
+  if [[ -z "$GP_WIFI_IFACE" ]]; then
+    print -ru2 -- '没有可用的有线网络或 Wi-Fi 接口，无法启动 GlobalProtect。'
+    return 1
+  fi
+  _gp-select-wifi connect || return 130
+  gpSsid="$REPLY"
+  _gp-reset-first-connection "${1:-}" || return
+  if [[ -n "$gpSsid" ]]; then
+    wifi-switch "$gpSsid"
+  else
+    _gp-progress-run '正在确认当前 Wi-Fi 网络就绪' _gp-net-wait-wifi ''
+  fi
+}
+
 gp-connect() {
   emulate -L zsh
-  local GP_WIFI_IFACE='' gpSsid='' REPLY gpSelection
+  local gpMode=connect-wifi
   if _gp-net-wired-ready; then
     print -r -- '检测到有线网络已就绪，无需选择 Wi-Fi。'
+    _gp-reset-first-connection "${1:-}" || return
+  elif [[ "$ASHLEY_VPN_BACKGROUND" == 1 && ! -t 0 ]]; then
+    [[ "$1" != reset ]] || gpMode=connect-wifi-reset
+    _gp-terminal-input "$gpMode" || return
   else
-    GP_WIFI_IFACE=$(_gp-net-interfaces wifi | /usr/bin/head -n 1)
-    if [[ -z "$GP_WIFI_IFACE" ]]; then
-      print -ru2 -- '没有可用的有线网络或 Wi-Fi 接口，无法启动 GlobalProtect。'
-      return 1
-    fi
-    if _gp-select-wifi connect; then
-      gpSsid="$REPLY"
-    else
-      gpSelection=$?
-      (( gpSelection == 130 )) && return 130
-      print -ru2 -- '未选择 Wi-Fi，已取消本次连接。'
-      return 1
-    fi
+    _gp-connect-wifi "${1:-}" || return
   fi
-  if [[ "${1:-}" == reset ]] && ! _gp-already-stopped; then
-    print -r -- '首次连接前检测到 GlobalProtect 正在运行，正在关闭现有服务…'
-    if ! gp-stop; then
-      print -ru2 -- '未确认 GlobalProtect 已停止，已取消本次连接。'
-      return 1
-    fi
-  fi
-  if [[ -n "$GP_WIFI_IFACE" ]]; then
-    if [[ -n "$gpSsid" ]]; then
-      wifi-switch "$gpSsid" || return
-    else
-      _gp-progress-run '正在确认当前 Wi-Fi 网络就绪' _gp-net-wait-wifi '' || return
-    fi
-  fi
+  [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '网络已就绪，正在启动 GlobalProtect'
   print -r -- '网络已就绪，正在启动 GlobalProtect…'
   gp-start || return
   _gp-wait-vpn

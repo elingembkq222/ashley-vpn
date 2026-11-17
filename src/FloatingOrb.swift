@@ -6,6 +6,8 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
     private static let frameKey = "AshleyVPNFloatingOrb"
     private let panel: NSPanel
     private let view: OrbView
+    private let statusPanel: NSPanel
+    private let statusLabel = NSTextField(labelWithString: "")
 
     var isVisible: Bool { panel.isVisible }
 
@@ -17,6 +19,7 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
             defer: false
         )
         view = OrbView(image: image, toggle: toggle)
+        statusPanel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
         panel.title = "Ashley VPN 桌面悬浮图标"
         panel.isOpaque = false
@@ -28,6 +31,33 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
         panel.level = .floating
         panel.delegate = self
         panel.contentView = view
+
+        let material = NSVisualEffectView()
+        material.material = .popover
+        material.blendingMode = .behindWindow
+        material.state = .active
+        material.wantsLayer = true
+        material.layer?.cornerRadius = 12
+        material.layer?.masksToBounds = true
+        statusLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        statusLabel.textColor = .labelColor
+        statusLabel.lineBreakMode = .byWordWrapping
+        statusLabel.maximumNumberOfLines = 3
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        material.addSubview(statusLabel)
+        NSLayoutConstraint.activate([
+            statusLabel.leadingAnchor.constraint(equalTo: material.leadingAnchor, constant: 12),
+            statusLabel.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -12),
+            statusLabel.centerYAnchor.constraint(equalTo: material.centerYAnchor)
+        ])
+        statusPanel.contentView = material
+        statusPanel.isOpaque = false
+        statusPanel.backgroundColor = .clear
+        statusPanel.hasShadow = true
+        statusPanel.ignoresMouseEvents = true
+        statusPanel.hidesOnDeactivate = false
+        statusPanel.collectionBehavior = panel.collectionBehavior
+        statusPanel.level = panel.level
 
         if !panel.setFrameUsingName(Self.frameKey), let screen = NSScreen.main {
             let bounds = screen.visibleFrame
@@ -44,6 +74,7 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
 
     func hide() {
         panel.orderOut(nil)
+        statusPanel.orderOut(nil)
     }
 
     func update(image: NSImage, hint: String, phase: Double?) {
@@ -54,6 +85,28 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
             view.setAccessibilityHelp(hint)
         }
         view.needsDisplay = true
+    }
+
+    func showStatus(_ text: String) {
+        guard isVisible, !text.isEmpty else {
+            if statusPanel.isVisible { statusPanel.orderOut(nil) }
+            return
+        }
+        if statusPanel.isVisible, statusLabel.stringValue == text { return }
+        statusLabel.stringValue = text
+        let size = statusLabel.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 246, height: 65)) ?? .zero
+        statusPanel.setContentSize(NSSize(width: min(size.width, 246) + 24, height: min(size.height, 65) + 18))
+        positionStatus()
+        statusPanel.orderFrontRegardless()
+    }
+
+    private func positionStatus() {
+        guard let bounds = panel.screen?.visibleFrame else { return }
+        let frame = panel.frame
+        let size = statusPanel.frame.size
+        let x = min(max(frame.midX - size.width / 2, bounds.minX + 8), bounds.maxX - size.width - 8)
+        let y = frame.maxY + size.height <= bounds.maxY - 8 ? frame.maxY : frame.minY - size.height
+        statusPanel.setFrameOrigin(NSPoint(x: x, y: max(bounds.minY + 8, y)))
     }
 
     func recoverOffscreenPosition() {
@@ -70,10 +123,12 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
         if origin != frame.origin {
             panel.setFrameOrigin(origin)
         }
+        if statusPanel.isVisible { positionStatus() }
     }
 
     func windowDidMove(_ notification: Notification) {
         panel.saveFrame(usingName: Self.frameKey)
+        if statusPanel.isVisible { positionStatus() }
     }
 }
 
