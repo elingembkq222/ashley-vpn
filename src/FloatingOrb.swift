@@ -12,10 +12,13 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
     private let view: OrbView
     private let statusPanel: NSPanel
     private let statusPill = StatusPill(frame: .zero)
+    private let quit: () -> Void
+    private var isShowingExitMenu = false
 
     var isVisible: Bool { panel.isVisible }
 
-    init(image: NSImage, toggle: @escaping () -> Void) {
+    init(image: NSImage, toggle: @escaping () -> Void, quit: @escaping () -> Void) {
+        self.quit = quit
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -25,6 +28,7 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
         view = OrbView(image: image, toggle: toggle)
         statusPanel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init()
+        view.showMenu = { [weak self] in self?.showExitMenu() }
         panel.title = "Ashley VPN 桌面悬浮图标"
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -61,6 +65,7 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
     }
 
     func hide() {
+        view.cancelPendingClick()
         panel.orderOut(nil)
         statusPanel.orderOut(nil)
     }
@@ -77,7 +82,7 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
 
     func showStatus(_ text: String, time: String? = nil, isCountdown: Bool = false,
                     step: String? = nil, phase: Double? = nil, tone: StatusTone = .neutral) {
-        guard isVisible, !text.isEmpty else {
+        guard isVisible, !isShowingExitMenu, !text.isEmpty else {
             if statusPanel.isVisible { statusPanel.orderOut(nil) }
             return
         }
@@ -94,6 +99,28 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
             statusPanel.orderFrontRegardless()
         }
     }
+
+    private func showExitMenu() {
+        guard isVisible, !isShowingExitMenu else { return }
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "退出", action: #selector(exitFromMenu), keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+
+        let size = menu.size
+        let gap: CGFloat = 6
+        let roomAbove = (panel.screen?.visibleFrame.maxY ?? panel.frame.maxY) - panel.frame.maxY
+        let y = roomAbove >= size.height + gap
+            ? view.bounds.maxY + size.height + gap
+            : view.bounds.minY - gap
+
+        isShowingExitMenu = true
+        statusPanel.orderOut(nil)
+        defer { isShowingExitMenu = false }
+        menu.popUp(positioning: nil, at: NSPoint(x: view.bounds.midX - size.width / 2, y: y), in: view)
+    }
+
+    @objc private func exitFromMenu() { quit() }
 
     private func positionStatus() {
         guard let bounds = panel.screen?.visibleFrame else { return }
@@ -244,10 +271,13 @@ private final class StatusPill: NSView {
 private final class OrbView: NSView {
     var image: NSImage
     var phase: Double?
+    var showMenu: (() -> Void)?
     private let toggle: () -> Void
+    private var pendingClick: Task<Void, Never>?
     private var mouseStart = NSPoint.zero
     private var windowStart = NSPoint.zero
     private var didDrag = false
+    private var isDoubleClick = false
 
     init(image: NSImage, toggle: @escaping () -> Void) {
         self.image = image
@@ -269,6 +299,8 @@ private final class OrbView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        isDoubleClick = event.clickCount == 2 && pendingClick != nil
+        if isDoubleClick { cancelPendingClick() }
         mouseStart = NSEvent.mouseLocation
         windowStart = window?.frame.origin ?? .zero
         didDrag = false
@@ -279,19 +311,44 @@ private final class OrbView: NSView {
         let x = point.x - mouseStart.x
         let y = point.y - mouseStart.y
         guard didDrag || abs(x) >= 3 || abs(y) >= 3 else { return }
+        cancelPendingClick()
         didDrag = true
         window?.setFrameOrigin(NSPoint(x: windowStart.x + x, y: windowStart.y + y))
     }
 
     override func mouseUp(with event: NSEvent) {
-        if !didDrag && bounds.contains(convert(event.locationInWindow, from: nil)) { toggle() }
+        guard !didDrag, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        if isDoubleClick {
+            showMenu?()
+        } else if event.clickCount == 1 {
+            cancelPendingClick()
+            let delay = UInt64(NSEvent.doubleClickInterval * 1_000_000_000)
+            pendingClick = Task { [weak self] in
+                do { try await Task.sleep(nanoseconds: delay) } catch { return }
+                guard !Task.isCancelled, let self else { return }
+                self.pendingClick = nil
+                self.toggle()
+            }
+        }
+    }
+
+    func cancelPendingClick() {
+        pendingClick?.cancel()
+        pendingClick = nil
     }
 
     override func accessibilityPerformPress() -> Bool {
+        cancelPendingClick()
         toggle()
         return true
     }
 
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard let showMenu else { return false }
+        cancelPendingClick()
+        showMenu()
+        return true
+    }
 }
 
 @MainActor
