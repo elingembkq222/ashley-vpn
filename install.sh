@@ -70,7 +70,7 @@ APPLESCRIPT
 repair_certificate_access() {
   local checker="$stage/globalprotect-keychain" result check_status=0
   local check_option=--check write_option=--repair
-  local message='验证管理员身份后，将把缺少的应用加入集团 VPN 私钥的现有访问列表。'
+  local message='验证管理员身份后，将补齐集团 VPN 私钥访问列表中缺少的授权。'
   if [[ "$mode" == --restore-keychain-prompt ]]; then
     check_option=--check-prompt
     write_option=--restore-prompt

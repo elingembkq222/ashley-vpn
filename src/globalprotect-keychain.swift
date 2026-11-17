@@ -14,9 +14,14 @@ private let components = [
     ("/Applications/GlobalProtect.app", "com.paloaltonetworks.GlobalProtect.client"),
     ("/Applications/GlobalProtect.app/Contents/Resources/PanGPS", "PanGPS"),
 ]
+private let identityExportGroup = "com.apple.identity.export"
+private let identityExportGroupPath = "group://\(identityExportGroup)"
 
 private typealias SigningApplication = (path: String, trusted: SecTrustedApplication)
 private typealias ValidateTrustedApplication = @convention(c) (SecTrustedApplication, UnsafePointer<CChar>) -> OSStatus
+private typealias CreateApplicationGroup = @convention(c) (
+    UnsafePointer<CChar>, SecCertificate?, UnsafeMutablePointer<SecTrustedApplication?>
+) -> OSStatus
 
 // The legacy Keychain API's CopyData returns only a path, not the stored code requirement.
 // Use the Security framework's verifier when available so a stale grant does not pass the check.
@@ -70,11 +75,26 @@ private func trustedData(_ app: SecTrustedApplication) -> Data? {
     return data as Data?
 }
 
+private func trustedIdentityExportGroup() -> SecTrustedApplication? {
+    guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2),
+                             "SecTrustedApplicationCreateApplicationGroup") else { return nil }
+    let createGroup = unsafeBitCast(symbol, to: CreateApplicationGroup.self)
+    var group: SecTrustedApplication?
+    // A nil signing anchor restricts membership to applications signed by Apple.
+    guard identityExportGroup.withCString({ createGroup($0, nil, &group) }) == errSecSuccess else { return nil }
+    return group
+}
+
 private struct PrivateKeyRule {
     let acl: SecACL
     let description: CFString
     let prompt: SecKeychainPromptSelector
     let applications: [SecTrustedApplication]
+
+    var hasIdentityExportGroup: Bool {
+        let groupPath = Data(identityExportGroupPath.utf8) + Data([0])
+        return applications.contains { trustedData($0) == groupPath }
+    }
 
     init?(_ access: SecAccess) {
         var list: CFArray?
@@ -108,15 +128,16 @@ private struct PrivateKeyRule {
         }
     }
 
-    func add(_ missing: [SigningApplication]) -> Bool {
+    func add(_ missing: [SigningApplication], identityExport: SecTrustedApplication?) -> Bool {
         let paths = Set(missing.map { Data($0.path.utf8) + Data([0]) })
-        // Replace obsolete entries for these same paths. Preserve the existing app group,
+        // Replace obsolete entries for these same paths. Preserve the other entries,
         // authorization operations, and prompt behavior of the imported private key.
         let retained = applications.filter { app in
             guard let path = trustedData(app) else { return true }
             return !paths.contains(path)
         }
-        let updated = retained + missing.map(\.trusted)
+        var updated = retained + missing.map(\.trusted)
+        if let identityExport { updated.append(identityExport) }
         return SecACLSetContents(acl, updated as CFArray, description, prompt) == errSecSuccess
     }
 
@@ -191,7 +212,7 @@ private func checkGlobalProtectSigning(
         if !rule.prompt.contains(.requirePassphase) {
             return report("集团 VPN 私钥未开启逐次密码提示。")
         }
-        let expectedPaths = Set((apps.map(\.path) + ["group://com.apple.identity.export"]).map {
+        let expectedPaths = Set((apps.map(\.path) + [identityExportGroupPath]).map {
             Data($0.utf8) + Data([0])
         })
         let existingPaths = rule.applications.compactMap(trustedData)
@@ -202,10 +223,12 @@ private func checkGlobalProtectSigning(
         }
     } else if rule.prompt.contains(.requirePassphase) {
         return report("集团 VPN 私钥要求每次访问时验证钥匙串密码，已保留此设置。", status: 4)
-    } else if missing.isEmpty {
+    } else if missing.isEmpty && rule.hasIdentityExportGroup {
         return report("集团 VPN 私钥访问权限已齐全。")
     }
-    let missingNames = missing.map { URL(fileURLWithPath: $0.path).lastPathComponent }.joined(separator: "、")
+    let missingGroup = !rule.hasIdentityExportGroup
+    let missingNames = (missing.map { URL(fileURLWithPath: $0.path).lastPathComponent }
+        + (missingGroup ? [identityExportGroup] : [])).joined(separator: "、")
     guard repair else {
         let message = restorePrompt ? "检测到集团 VPN 私钥已开启逐次密码提示。" : "缺少私钥访问权限：\(missingNames)"
         if expectedFingerprint != nil { return report(message, status: 1) }
@@ -213,8 +236,12 @@ private func checkGlobalProtectSigning(
         return report(expected, status: 3)
     }
 
+    let group = missingGroup ? trustedIdentityExportGroup() : nil
+    if missingGroup && group == nil {
+        return report("macOS 未能创建 \(identityExportGroup) 应用组授权。", status: 1)
+    }
     let expectedPrompt = restorePrompt ? SecKeychainPromptSelector() : rule.prompt
-    guard (restorePrompt ? rule.restorePrompt() : rule.add(missing)) else {
+    guard (restorePrompt ? rule.restorePrompt() : rule.add(missing, identityExport: group)) else {
         return report("无法准备集团 VPN 私钥的访问权限。", status: 1)
     }
     let save = SecKeychainItemSetAccess(item, access)
@@ -225,6 +252,7 @@ private func checkGlobalProtectSigning(
     guard SecKeychainItemCopyAccess(item, &verifiedAccess) == errSecSuccess, let verifiedAccess,
           let verifiedRule = PrivateKeyRule(verifiedAccess),
           verifiedRule.prompt == expectedPrompt,
+          verifiedRule.hasIdentityExportGroup,
           !restorePrompt || verifiedRule.applications.compactMap(trustedData) == rule.applications.compactMap(trustedData),
           verifiedRule.missingApplications(apps)?.isEmpty == true else {
         return report("无法验证新的签名授权，请在钥匙串访问中检查。", status: 1)
