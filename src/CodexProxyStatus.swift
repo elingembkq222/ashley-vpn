@@ -1,86 +1,138 @@
 import Foundation
 import SystemConfiguration
 
-enum CodexProxyStatus: String, Sendable {
-    case unavailable = "LibCyber 正在运行，本地代理未就绪"
-    case waiting = "LibCyber 代理已就绪，等待 Codex 建立连接"
-    case observed = "已检测到 Codex 连接 LibCyber"
-
+enum CodexProxyStatus {
     static let codexIdentifier = "com.openai.codex"
-    static let libCyberIdentifier = "com.libcyber.pirate"
 
-    static func check(codex: URL, libCyber: URL) -> Self {
-        guard let settings = SCDynamicStoreCopyProxies(nil) as? [String: Any],
-              settings[kSCPropNetProxiesHTTPSEnable as String] as? Int == 1,
-              let host = settings[kSCPropNetProxiesHTTPSProxy as String] as? String,
-              let port = settings[kSCPropNetProxiesHTTPSPort as String] as? Int,
-              (1...65535).contains(port) else { return .unavailable }
-        let addresses: [String]
-        switch host.lowercased() {
-        case "localhost": addresses = ["127.0.0.1", "[::1]"]
-        case "127.0.0.1": addresses = ["127.0.0.1"]
-        case "::1", "[::1]": addresses = ["[::1]"]
-        default: return .unavailable
+    struct Route: Equatable, Sendable {
+        enum Kind: Equatable, Sendable {
+            case localProxy(connected: Bool)
+            case systemVPN
         }
-        let codexPath = codex.resolvingSymlinksInPath().path + "/Contents/"
-        let libCyberPath = libCyber.resolvingSymlinksInPath().path + "/Contents/"
-        var result = Self.unavailable
-        for address in addresses {
-            let endpoint = "\(address):\(port)"
-            guard let snapshot = sockets(at: endpoint) else { continue }
-            let status = classify(snapshot, endpoint: endpoint) { pid in
-                guard let path = executablePath(of: pid) else { return nil }
-                if path.hasPrefix(codexPath) { return codexIdentifier }
-                if path.hasPrefix(libCyberPath) { return libCyberIdentifier }
-                return nil
-            }
-            if status == .observed { return status }
-            if status == .waiting { result = status }
-        }
-        return result
+
+        let id: String
+        let name: String
+        let kind: Kind
     }
 
-    static func classify(_ snapshot: String, endpoint: String, owner: (Int32) -> String?) -> Self {
-        var identifier: String?
-        var connection = ""
-        var proxyListening = false
-        var codexUsingProxy = false
+    static func routes(codex: URL) -> [Route] {
+        let codexPath = codex.resolvingSymlinksInPath().path + "/Contents/"
+        var proxies: [String: Route] = [:]
+        for endpoint in localProxyEndpoints() {
+            guard let snapshot = output("/usr/sbin/lsof", ["-nP", "-iTCP@\(endpoint)", "-FfpnT", "-Ts"]) else {
+                continue
+            }
+            for proxy in proxyRoutes(snapshot, endpoint: endpoint, codexPath: codexPath, pathForPID: executablePath) {
+                if let prior = proxies[proxy.id], case .localProxy(true) = prior.kind { continue }
+                proxies[proxy.id] = proxy
+            }
+        }
+
+        let services = output("/usr/sbin/scutil", ["--nc", "list"]).map(vpnRoutes) ?? []
+        return (Array(proxies.values) + services).sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    static func vpnRoutes(_ snapshot: String) -> [Route] {
+        return snapshot.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: "\"", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, !parts[1].isEmpty, parts[2].contains("["),
+                  let id = parts[0].split(whereSeparator: \.isWhitespace).first(where: {
+                      UUID(uuidString: String($0)) != nil
+                  }),
+                  !isGlobalProtect(parts.joined(separator: " ")) else { return nil }
+            return Route(id: "vpn:" + id.lowercased(), name: String(parts[1]), kind: .systemVPN)
+        }
+    }
+
+    static func proxyRoutes(_ snapshot: String, endpoint: String, codexPath: String,
+                            pathForPID: (Int32) -> String?) -> [Route] {
+        var executable: String?
+        var socket = ""
+        var listeners = Set<String>()
+        var connected = false
         for line in snapshot.split(whereSeparator: \.isNewline) {
             if line.hasPrefix("p") {
-                identifier = Int32(line.dropFirst()).flatMap(owner)
+                executable = Int32(line.dropFirst()).flatMap(pathForPID)
+                socket = ""
             } else if line.hasPrefix("f") {
-                connection = ""
+                socket = ""
             } else if line.hasPrefix("n") {
-                connection = String(line.dropFirst())
-            } else if line == "TST=LISTEN",
-                      identifier == libCyberIdentifier {
-                proxyListening = true
-            } else if line == "TST=ESTABLISHED",
-                      identifier == codexIdentifier, connection.hasSuffix("->" + endpoint) {
-                codexUsingProxy = true
+                socket = String(line.dropFirst())
+            } else if line == "TST=LISTEN", let executable {
+                listeners.insert(executable)
+            } else if line == "TST=ESTABLISHED", executable?.hasPrefix(codexPath) == true,
+                      socket.hasSuffix("->" + endpoint) {
+                connected = true
             }
         }
-        guard proxyListening else { return .unavailable }
-        return codexUsingProxy ? .observed : .waiting
+        let routes = listeners.compactMap(proxyOwner)
+        let ids = Set(routes.map(\.id))
+        guard routes.count == listeners.count, ids.count == 1, let proxy = routes.first else { return [] }
+        return [Route(id: proxy.id, name: proxy.name, kind: .localProxy(connected: connected))]
     }
 
-    private static func sockets(at endpoint: String) -> String? {
+    private static func proxyOwner(_ path: String) -> Route? {
+        let executable = URL(fileURLWithPath: path)
+        let components = executable.pathComponents
+        let bundle = components.firstIndex { $0.lowercased().hasSuffix(".app") }
+            .flatMap { NSURL.fileURL(withPathComponents: Array(components[...$0])) }
+            .flatMap(Bundle.init(url:))
+        let name = (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? bundle?.bundleURL.deletingPathExtension().lastPathComponent
+            ?? executable.lastPathComponent
+        let identifier = bundle?.bundleIdentifier ?? executable.path
+        guard !isGlobalProtect([name, identifier, path].joined(separator: " ")) else { return nil }
+        return Route(id: "proxy:" + identifier, name: name, kind: .localProxy(connected: false))
+    }
+
+    private static func localProxyEndpoints() -> [String] {
+        guard let settings = SCDynamicStoreCopyProxies(nil) as? [String: Any] else { return [] }
+        let kinds = [
+            (kSCPropNetProxiesHTTPEnable, kSCPropNetProxiesHTTPProxy, kSCPropNetProxiesHTTPPort),
+            (kSCPropNetProxiesHTTPSEnable, kSCPropNetProxiesHTTPSProxy, kSCPropNetProxiesHTTPSPort),
+            (kSCPropNetProxiesSOCKSEnable, kSCPropNetProxiesSOCKSProxy, kSCPropNetProxiesSOCKSPort)
+        ]
+        let endpoints = kinds.flatMap { (enabled, address, portKey) -> [String] in
+            guard settings[enabled as String] as? Int == 1,
+                  let host = settings[address as String] as? String,
+                  let port = settings[portKey as String] as? Int,
+                  (1...65535).contains(port) else { return [] }
+            switch host.lowercased() {
+            case "localhost": return ["127.0.0.1:\(port)", "[::1]:\(port)"]
+            case "127.0.0.1": return ["127.0.0.1:\(port)"]
+            case "::1", "[::1]": return ["[::1]:\(port)"]
+            default: return []
+            }
+        }
+        return Set(endpoints).sorted()
+    }
+
+    private static func isGlobalProtect(_ identity: String) -> Bool {
+        let value = identity.lowercased().filter { !$0.isWhitespace }
+        return value.contains("globalprotect") || value.contains("paloaltonetworks") || value.contains("集团vpn")
+    }
+
+    private static func output(_ executable: String, _ arguments: [String]) -> String? {
         let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = ["-nP", "-iTCP@\(endpoint)", "-FfpnT", "-Ts"]
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.environment = ["LC_ALL": "C"]
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = output
+        process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
             return nil
         }
-        let snapshot = output.fileHandleForReading.readDataToEndOfFile()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
-        return String(decoding: snapshot, as: UTF8.self)
+        return String(decoding: data, as: UTF8.self)
     }
 
     private static func executablePath(of pid: Int32) -> String? {
