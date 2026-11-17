@@ -614,7 +614,11 @@ _gp-select-wifi() {
 
 gp-disconnect() {
   emulate -L zsh
+  local gpProgressStep='1/2'
+  [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '正在关闭集团 VPN'
   gp-stop || return
+  gpProgressStep='2/2'
+  [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress 'VPN 已关闭，正在检查网络'
   if _gp-net-wired-ready; then
     print -r -- '检测到有线网络，保留当前网络设置。'
   elif _gp-net-system-vpn-connected; then
@@ -900,7 +904,7 @@ _gp-wait-vpn() {
         *) gpLabel='正在等待 GlobalProtect 连接' ;;
       esac
       if [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]]; then
-        _gp-gui-progress "$gpLabel · 最多再等 $((gpTimeout - gpElapsed)) 秒"
+        _gp-gui-progress "$gpLabel" "$((gpTimeout - gpElapsed))"
       elif [[ -t 2 ]]; then
         printf >&2 '\r\033[2K%s %s… %s 秒' "${gpFrames[$((gpElapsed % ${#gpFrames} + 1))]}" "$gpLabel" "$gpElapsed"
       elif [[ "$gpState" != "$gpLast" ]] || (( gpElapsed - gpLastTick >= 10 )); then
@@ -948,7 +952,8 @@ _gp-connect-wifi() {
 
 gp-connect() {
   emulate -L zsh
-  local gpMode=connect-wifi
+  local gpMode=connect-wifi gpProgressStep='1/3'
+  [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '正在准备连接集团 VPN'
   if _gp-net-wired-ready; then
     print -r -- '检测到有线网络已就绪，无需选择 Wi-Fi。'
     _gp-reset-first-connection "${1:-}" || return
@@ -958,8 +963,10 @@ gp-connect() {
   else
     _gp-connect-wifi "${1:-}" || return
   fi
+  gpProgressStep='2/3'
   [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '网络已就绪，正在启动 GlobalProtect'
   print -r -- '网络已就绪，正在启动 GlobalProtect…'
   gp-start || return
+  gpProgressStep='3/3'
   _gp-wait-vpn
 }

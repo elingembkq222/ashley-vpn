@@ -25,8 +25,11 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private var activeOperation: String?
     private var workerRunning = false
     private var progress = ""
+    private var progressStep: String?
+    private var progressRemaining: Int?
     private var lastInput: String?
     private var feedback = ""
+    private var feedbackTone: FloatingOrb.StatusTone = .neutral
     private var feedbackUntil: TimeInterval = 0
     private var readingStatus = false
     private var statusTimer: Timer?
@@ -152,6 +155,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
                 self.busy = fields[0] == "busy"
                 self.activeOperation = self.busy && UUID(uuidString: String(fields[2])) != nil ? String(fields[2]) : nil
                 self.progress = self.busy && lines.count > 1 ? lines[1] : ""
+                self.progressStep = self.busy && lines.count > 3 && !lines[3].isEmpty ? lines[3] : nil
+                self.progressRemaining = self.busy && lines.count > 4 ? Int(lines[4]) : nil
                 if let token = self.activeOperation, lines.count > 2, self.cancellation == nil {
                     self.openInput(lines[2], token: token)
                 }
@@ -221,21 +226,24 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 
     private func drawIcons() {
         let connected = state == .connected
-        let phase = isTransitioning ? ((uptime - animationStarted) / 1.5).truncatingRemainder(dividingBy: 1) : nil
-        let hint: String
+        let elapsed = max(0, uptime - animationStarted)
+        let phase = isTransitioning ? (elapsed / 1.5).truncatingRemainder(dividingBy: 1) : nil
+        let statusText: String
+        let countdown = isTransitioning && cancellation == nil ? progressRemaining : nil
         if cancellation != nil {
-            hint = "正在取消本次 VPN 操作"
+            statusText = "正在取消本次 VPN 操作"
         } else if isTransitioning {
-            hint = progress.isEmpty ? "正在切换集团 VPN" : progress
+            statusText = progress.isEmpty ? "正在切换集团 VPN" : progress
         } else if uptime < feedbackUntil {
-            hint = feedback
+            statusText = feedback
         } else {
             switch state {
-            case .connected: hint = "集团 VPN 已连接，单击桌面图标关闭"
-            case .running: hint = "GlobalProtect 正在运行，单击桌面图标关闭"
-            case .stopped: hint = "集团 VPN 已关闭，单击桌面图标开启"
+            case .connected: statusText = "集团 VPN 已连接，单击桌面图标关闭"
+            case .running: statusText = "GlobalProtect 正在运行，单击桌面图标关闭"
+            case .stopped: statusText = "集团 VPN 已关闭，单击桌面图标开启"
             }
         }
+        let hint = countdown.map { "\(statusText) · 最多再等 \($0) 秒" } ?? statusText
         if let base = connected ? connectedMenuIcon : disabledMenuIcon {
             let icon = NSImage(size: base.size, flipped: false) { rect in
                 base.draw(in: rect)
@@ -255,7 +263,15 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         if let image = connected ? connectedOrb : disabledOrb {
             orb?.update(image: image, hint: hint, phase: phase)
         }
-        orb?.showStatus(isTransitioning ? hint : (uptime < feedbackUntil ? feedback : ""))
+        if isTransitioning {
+            let seconds = max(0, countdown ?? Int(elapsed))
+            let time = String(format: "%d:%02d", seconds / 60, seconds % 60)
+            let step = cancellation == nil ? progressStep.map { "步骤 \($0)" } : nil
+            orb?.showStatus(statusText, time: time, isCountdown: countdown != nil,
+                            step: step, phase: phase, tone: .working)
+        } else {
+            orb?.showStatus(uptime < feedbackUntil ? feedback : "", tone: feedbackTone)
+        }
     }
 
     @discardableResult
@@ -287,12 +303,17 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             self.workerRunning = false
             self.pendingUntil = nil
             self.progress = ""
+            self.progressStep = nil
+            self.progressRemaining = nil
             if code == 0 {
                 self.feedback = raw.contains("VPN 已连接") ? "集团 VPN 已连接" : "集团 VPN 已关闭"
+                self.feedbackTone = .success
             } else if code == 130 {
                 self.feedback = "已取消本次操作"
+                self.feedbackTone = .neutral
             } else {
                 self.feedback = raw.split(whereSeparator: \.isNewline).last.map(String.init) ?? "VPN 操作未完成"
+                self.feedbackTone = .warning
             }
             self.feedbackUntil = self.uptime + 5
             self.updateDisplay()

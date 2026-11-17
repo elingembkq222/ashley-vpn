@@ -46,7 +46,8 @@ process_start() {
 
 _gp-gui-progress() {
   [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]] || return 0
-  print -r -- "$1" > "$operation_progress.$$" && /bin/mv -f -- "$operation_progress.$$" "$operation_progress"
+  printf '%s\n' "$1" "${gpProgressStep:-}" "${2:-}" > "$operation_progress.$$" &&
+    /bin/mv -f -- "$operation_progress.$$" "$operation_progress"
 }
 
 _gp-terminal-input() {
@@ -58,7 +59,7 @@ _gp-terminal-input() {
     *-system) _gp-gui-progress '请在终端完成管理员验证' ;;
     *) _gp-gui-progress '请在终端选择 Wi-Fi' ;;
   esac
-  print -r -- "$1 $name $$" > "$ASHLEY_VPN_INPUT/request" || return 1
+  print -r -- "$1 $name $$ ${gpProgressStep:-}" > "$ASHLEY_VPN_INPUT/request" || return 1
   print -r -- "$1 $name" > "$operation_input.$$" && /bin/mv -f -- "$operation_input.$$" "$operation_input" || return 1
   for attempt in {1..60}; do
     [[ -f "$ASHLEY_VPN_INPUT/owner" || -f "$ASHLEY_VPN_INPUT/result" ]] && break
@@ -107,10 +108,10 @@ _gp-cancel-input() {
 }
 
 _gp-run-input() {
-  local mode="$1" name="$2" request owner_mode owner_name owner_pid started
+  local mode="$1" name="$2" owner_mode owner_name owner_pid started gpProgressStep
   [[ "$name" =~ '^input\.[[:xdigit:]-]+\.[[:alnum:]]+$' && -t 0 && -t 2 ]] || return 2
   local input_path="$ASHLEY_VPN_STATE/$name"
-  { read -r owner_mode owner_name owner_pid < "$input_path/request"; } 2>/dev/null || return 2
+  { read -r owner_mode owner_name owner_pid gpProgressStep < "$input_path/request"; } 2>/dev/null || return 2
   [[ "$owner_mode" == "$mode" && "$owner_name" == "$name" && "$owner_pid" == <2-> ]] || return 2
   started=$(process_start "$$")
   [[ -n "$started" ]] || return 1
@@ -180,9 +181,14 @@ if [[ "$1" == status ]]; then
   fi
   print -r -- "$busy $(vpn_state) $token"
   if [[ "$busy" == busy && "$token" != - ]]; then
-    { IFS= read -r progress < "$operation_progress"; } 2>/dev/null || progress=''
+    progress='' step='' remaining=''
+    {
+      IFS= read -r progress
+      IFS= read -r step
+      IFS= read -r remaining
+    } < "$operation_progress" 2>/dev/null || true
     { IFS= read -r input < "$operation_input"; } 2>/dev/null || input=''
-    printf '%s\n' "$progress" "$input"
+    printf '%s\n' "$progress" "$input" "$step" "$remaining"
   fi
   exit 0
 fi
