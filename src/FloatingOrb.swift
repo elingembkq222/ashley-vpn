@@ -2,12 +2,16 @@ import AppKit
 
 @MainActor
 final class FloatingOrb: NSObject, NSWindowDelegate {
+    enum StatusTone {
+        case working, success, warning, neutral
+    }
+
     private static let size = NSSize(width: 104, height: 104)
     private static let frameKey = "AshleyVPNFloatingOrb"
     private let panel: NSPanel
     private let view: OrbView
     private let statusPanel: NSPanel
-    private let statusLabel = NSTextField(labelWithString: "")
+    private let statusPill = StatusPill(frame: .zero)
 
     var isVisible: Bool { panel.isVisible }
 
@@ -32,25 +36,9 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
         panel.delegate = self
         panel.contentView = view
 
-        let material = NSVisualEffectView()
-        material.material = .popover
-        material.blendingMode = .behindWindow
-        material.state = .active
-        material.wantsLayer = true
-        material.layer?.cornerRadius = 12
-        material.layer?.masksToBounds = true
-        statusLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        statusLabel.textColor = .labelColor
-        statusLabel.lineBreakMode = .byWordWrapping
-        statusLabel.maximumNumberOfLines = 3
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        material.addSubview(statusLabel)
-        NSLayoutConstraint.activate([
-            statusLabel.leadingAnchor.constraint(equalTo: material.leadingAnchor, constant: 12),
-            statusLabel.trailingAnchor.constraint(equalTo: material.trailingAnchor, constant: -12),
-            statusLabel.centerYAnchor.constraint(equalTo: material.centerYAnchor)
-        ])
-        statusPanel.contentView = material
+        statusPill.setAccessibilityElement(true)
+        statusPill.setAccessibilityRole(.staticText)
+        statusPanel.contentView = statusPill
         statusPanel.isOpaque = false
         statusPanel.backgroundColor = .clear
         statusPanel.hasShadow = true
@@ -87,25 +75,34 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
         view.needsDisplay = true
     }
 
-    func showStatus(_ text: String) {
+    func showStatus(_ text: String, time: String? = nil, isCountdown: Bool = false,
+                    step: String? = nil, phase: Double? = nil, tone: StatusTone = .neutral) {
         guard isVisible, !text.isEmpty else {
             if statusPanel.isVisible { statusPanel.orderOut(nil) }
             return
         }
-        if statusPanel.isVisible, statusLabel.stringValue == text { return }
-        statusLabel.stringValue = text
-        let size = statusLabel.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 246, height: 65)) ?? .zero
-        statusPanel.setContentSize(NSSize(width: min(size.width, 246) + 24, height: min(size.height, 65) + 18))
-        positionStatus()
-        statusPanel.orderFrontRegardless()
+        let content = StatusPill.Content(text: text, time: time, isCountdown: isCountdown, step: step, tone: tone)
+        let changed = statusPill.content != content
+        statusPill.content = content
+        statusPill.phase = phase
+        statusPill.needsDisplay = true
+        if changed {
+            statusPill.setAccessibilityLabel(content.accessibilityLabel)
+        }
+        if changed || !statusPanel.isVisible {
+            positionStatus()
+            statusPanel.orderFrontRegardless()
+        }
     }
 
     private func positionStatus() {
         guard let bounds = panel.screen?.visibleFrame else { return }
         let frame = panel.frame
+        let maxWidth = min(460, bounds.width - 16)
+        statusPanel.setContentSize(NSSize(width: min(statusPill.preferredWidth, maxWidth), height: StatusPill.height))
         let size = statusPanel.frame.size
         let x = min(max(frame.midX - size.width / 2, bounds.minX + 8), bounds.maxX - size.width - 8)
-        let y = frame.maxY + size.height <= bounds.maxY - 8 ? frame.maxY : frame.minY - size.height
+        let y = frame.maxY + size.height + 14 <= bounds.maxY ? frame.maxY + 6 : frame.minY - size.height - 6
         statusPanel.setFrameOrigin(NSPoint(x: x, y: max(bounds.minY + 8, y)))
     }
 
@@ -129,6 +126,117 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
     func windowDidMove(_ notification: Notification) {
         panel.saveFrame(usingName: Self.frameKey)
         if statusPanel.isVisible { positionStatus() }
+    }
+}
+
+@MainActor
+private final class StatusPill: NSView {
+    struct Content: Equatable {
+        let text: String
+        let time: String?
+        let isCountdown: Bool
+        let step: String?
+        let tone: FloatingOrb.StatusTone
+
+        var accessibilityLabel: String {
+            let duration = time.map { (isCountdown ? "剩余时间 " : "已用时间 ") + $0 }
+            return [text, duration, step].compactMap { $0 }.joined(separator: "，")
+        }
+    }
+
+    static let height: CGFloat = 44
+    private static let messageInset: CGFloat = 38
+    private static let trailingInset: CGFloat = 10
+    private static let gap: CGFloat = 10
+    var content = Content(text: "", time: nil, isCountdown: false, step: nil, tone: .neutral)
+    var phase: Double?
+
+    private let textFont = NSFont.systemFont(ofSize: 13, weight: .regular)
+    private let timeFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+    private let stepFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+    private let foreground = NSColor(white: 0.97, alpha: 1)
+    private let muted = NSColor(white: 0.70, alpha: 1)
+
+    var preferredWidth: CGFloat {
+        Self.messageInset + textWidth(content.text, font: textFont) + Self.trailingInset
+            + (content.time == nil ? 0 : textWidth(content.time, font: timeFont) + Self.gap)
+            + (content.step == nil ? 0 : textWidth(content.step, font: stepFont) + 36)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let body = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+                                xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+        NSColor(srgbRed: 0.12, green: 0.12, blue: 0.115, alpha: 1).setFill()
+        body.fill()
+        NSColor(white: 0.23, alpha: 1).setStroke()
+        body.lineWidth = 1
+        body.stroke()
+        drawIndicator()
+
+        var right = bounds.maxX - Self.trailingInset
+        if let step = content.step {
+            let width = textWidth(step, font: stepFont)
+            let badge = NSRect(x: right - width - 20, y: bounds.midY - 15, width: width + 20, height: 30)
+            NSColor(white: 0.16, alpha: 1).setFill()
+            NSBezierPath(roundedRect: badge, xRadius: 15, yRadius: 15).fill()
+            drawText(step, at: badge.minX + 10, width: width, font: stepFont, color: foreground)
+            right = badge.minX - 8
+            NSColor(white: 0.25, alpha: 1).setFill()
+            NSBezierPath(rect: NSRect(x: right, y: bounds.midY - 8, width: 1, height: 16)).fill()
+            right -= 8
+        }
+        if let time = content.time {
+            let width = textWidth(time, font: timeFont)
+            drawText(time, at: right - width, width: width, font: timeFont, color: muted)
+            right -= width + Self.gap
+        }
+        drawText(content.text, at: Self.messageInset, width: max(0, right - Self.messageInset),
+                 font: textFont, color: foreground)
+    }
+
+    private func drawIndicator() {
+        let center = NSPoint(x: 22, y: bounds.midY)
+        let ring = NSBezierPath(ovalIn: NSRect(x: center.x - 7, y: center.y - 7, width: 14, height: 14))
+        ring.lineWidth = 2
+        let green = NSColor(srgbRed: 0.39, green: 0.72, blue: 0.54, alpha: 1)
+        if content.tone == .working {
+            green.withAlphaComponent(0.24).setStroke()
+            ring.stroke()
+            let angle = 90 - (phase ?? 0) * 360
+            let arc = NSBezierPath()
+            arc.appendArc(withCenter: center, radius: 7, startAngle: angle, endAngle: angle - 115, clockwise: true)
+            arc.lineWidth = 2
+            arc.lineCapStyle = .round
+            green.setStroke()
+            arc.stroke()
+            return
+        }
+        let color: NSColor
+        let mark: String
+        switch content.tone {
+        case .success: (color, mark) = (green, "✓")
+        case .warning: (color, mark) = (NSColor(srgbRed: 0.94, green: 0.65, blue: 0.34, alpha: 1), "!")
+        default: (color, mark) = (muted, "–")
+        }
+        color.withAlphaComponent(0.55).setStroke()
+        ring.stroke()
+        let font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        let width = textWidth(mark, font: font)
+        drawText(mark, at: center.x - width / 2, width: width, font: font, color: color)
+    }
+
+    private func textWidth(_ text: String?, font: NSFont) -> CGFloat {
+        guard let text else { return 0 }
+        return ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
+    }
+
+    private func drawText(_ text: String, at x: CGFloat, width: CGFloat, font: NSFont, color: NSColor) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let value = text as NSString
+        let height = ceil(value.size(withAttributes: [.font: font]).height)
+        let rect = NSRect(x: x, y: floor(bounds.midY - height / 2), width: width, height: height)
+        value.draw(in: rect, withAttributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
     }
 }
 
