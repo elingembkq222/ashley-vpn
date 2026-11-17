@@ -6,7 +6,7 @@ enum CodexProxyStatus {
     struct Route: Equatable, Sendable {
         enum Kind: Equatable, Sendable {
             case localProxy(url: URL)
-            case systemVPN
+            case systemVPN(available: Bool)
         }
 
         let id: String
@@ -40,9 +40,38 @@ enum CodexProxyStatus {
             }
         }
 
-        let services = output("/usr/sbin/scutil", ["--nc", "list"]).map(vpnRoutes) ?? []
-        return (Array(proxies.values) + services).sorted {
+        let legacy = output("/usr/sbin/scutil", ["--nc", "list"]).map(vpnRoutes) ?? []
+        var services = Dictionary(legacy.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for service in configuredVPNRoutes() {
+            let kind = services[service.id]?.kind ?? service.kind
+            services[service.id] = Route(id: service.id, name: service.name, kind: kind)
+        }
+        return (Array(proxies.values) + services.values).sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    static func configuredVPNRoutes() -> [Route] {
+        guard let preferences = SCPreferencesCreate(nil, "Ashley VPN" as CFString, nil),
+              let services = SCNetworkServiceCopyAll(preferences) as? [SCNetworkService] else { return [] }
+        let current = SCNetworkSetCopyCurrent(preferences).flatMap(SCNetworkSetCopyServices) as? [SCNetworkService] ?? []
+        let currentIDs = Set(current.compactMap { SCNetworkServiceGetServiceID($0) as String? })
+        return services.compactMap { service in
+            guard let id = SCNetworkServiceGetServiceID(service) as String?,
+                  let name = SCNetworkServiceGetName(service) as String?,
+                  let interface = SCNetworkServiceGetInterface(service),
+                  let type = SCNetworkInterfaceGetInterfaceType(interface) as String? else { return nil }
+            let subtype = SCNetworkInterfaceGetInterface(interface).flatMap {
+                SCNetworkInterfaceGetInterfaceType($0) as String?
+            } ?? ""
+            switch type {
+            case "VPN", "IPSec", "IKEv2", "L2TP": break
+            case "PPP" where subtype == "L2TP": break
+            default: return nil
+            }
+            let displayName = SCNetworkInterfaceGetLocalizedDisplayName(interface) as String? ?? ""
+            let available = currentIDs.contains(id) && SCNetworkServiceGetEnabled(service)
+            return systemVPNRoute(id: id, name: name, provider: "\(type):\(subtype) \(displayName)", available: available)
         }
     }
 
@@ -79,14 +108,25 @@ enum CodexProxyStatus {
 
     static func vpnRoutes(_ snapshot: String) -> [Route] {
         return snapshot.split(whereSeparator: \.isNewline).compactMap { line in
-            let parts = line.split(separator: "\"", maxSplits: 2, omittingEmptySubsequences: false)
-            guard parts.count == 3, !parts[1].isEmpty, parts[2].contains("["),
-                  let id = parts[0].split(whereSeparator: \.isWhitespace).first(where: {
-                      UUID(uuidString: String($0)) != nil
-                  }),
-                  !isGlobalProtect(parts.joined(separator: " ")) else { return nil }
-            return Route(id: "vpn:" + id.lowercased(), name: String(parts[1]), kind: .systemVPN)
+            guard let firstQuote = line.firstIndex(of: "\""), let lastQuote = line.lastIndex(of: "\""),
+                  firstQuote < lastQuote else { return nil }
+            let prefix = line[..<firstQuote]
+            guard let endOfStatus = prefix.firstIndex(of: ")"),
+                  let id = prefix[prefix.index(after: endOfStatus)...].split(whereSeparator: \.isWhitespace).first
+            else { return nil }
+            let name = String(line[line.index(after: firstQuote)..<lastQuote])
+            let provider = String(line[line.index(after: lastQuote)...])
+            let available = prefix.trimmingCharacters(in: .whitespaces).hasPrefix("*")
+            return systemVPNRoute(id: String(id), name: name, provider: provider, available: available)
         }
+    }
+
+    private static func systemVPNRoute(id: String, name: String, provider: String, available: Bool) -> Route? {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !isGlobalProtect(provider), let id = normalizedVPNService(id) else { return nil }
+        let normalizedName = name.lowercased().filter { !$0.isWhitespace }
+        guard normalizedName != "globalprotect", normalizedName != "集团vpn" else { return nil }
+        return Route(id: "vpn:" + id, name: name, kind: .systemVPN(available: available))
     }
 
     static func proxyRoute(_ snapshot: String, url: URL, pathForPID: (Int32) -> String?) -> Route? {
@@ -184,8 +224,15 @@ enum CodexProxyStatus {
     }
 
     private static func vpnService(_ id: String) -> String? {
-        guard id.hasPrefix("vpn:"), let uuid = UUID(uuidString: String(id.dropFirst(4))) else { return nil }
-        return uuid.uuidString
+        guard id.hasPrefix("vpn:"), let service = normalizedVPNService(String(id.dropFirst(4))) else { return nil }
+        return UUID(uuidString: service)?.uuidString ?? service
+    }
+
+    private static func normalizedVPNService(_ id: String) -> String? {
+        if let uuid = UUID(uuidString: id) { return uuid.uuidString.lowercased() }
+        guard id.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z"#, options: .regularExpression) != nil
+        else { return nil }
+        return id
     }
 
     private static func isGlobalProtect(_ identity: String) -> Bool {
