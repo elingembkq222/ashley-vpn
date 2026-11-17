@@ -37,6 +37,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private var feedbackTone: FloatingOrb.StatusTone = .neutral
     private var feedbackUntil: TimeInterval = 0
     private var readingStatus = false
+    private var hasVPNStatus = false
     private var statusTimer: Timer?
     private var terminalInputActive = false
     private var animationTimer: Timer?
@@ -52,7 +53,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         }
 
         if let image = disabledOrb {
-            let orb = FloatingOrb(image: image) { [weak self] in self?.toggleFromDesktop() }
+            let orb = FloatingOrb(image: image, toggle: { [weak self] in self?.toggleFromDesktop() },
+                                  quit: { [weak self] in self?.confirmOrbExit() })
             self.orb = orb
             orb.show()
         }
@@ -74,18 +76,18 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         menu.addItem(status)
         menuStatus = status
         menu.addItem(.separator())
-        addItem("开启 VPN", action: #selector(connect), to: menu)
-        addItem("关闭 VPN", action: #selector(disconnect), to: menu)
-        menuCancel = addItem("取消本次操作", action: #selector(cancelFromMenu), to: menu)
-        let proxy = NSMenuItem(title: "Codex 专用流量", action: nil, keyEquivalent: "")
+        addItem("连接 VPN", action: #selector(connect), to: menu)
+        addItem("断开 VPN", action: #selector(disconnect), to: menu)
+        menuCancel = addItem("取消操作", action: #selector(cancelFromMenu), to: menu)
+        let proxy = NSMenuItem(title: "Codex 流量", action: nil, keyEquivalent: "")
         menu.addItem(proxy)
         menuCodexProxy = proxy
         updateProxyMenu()
         menu.addItem(.separator())
         if let orb {
-            addItem(orb.isVisible ? "隐藏桌面图标" : "显示桌面图标", action: #selector(toggleOrb), to: menu)
+            addItem(orb.isVisible ? "隐藏浮标" : "显示浮标", action: #selector(toggleOrb), to: menu)
         }
-        addItem("退出 Ashley VPN 图标", action: #selector(quit), to: menu)
+        addItem("退出", action: #selector(quit), to: menu)
         return menu
     }
 
@@ -170,6 +172,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             let lines = raw.components(separatedBy: "\n")
             let fields = (lines.first ?? "").split(whereSeparator: \.isWhitespace)
             if code == 0, fields.count == 3, let next = VPNState(rawValue: String(fields[1])) {
+                self.hasVPNStatus = true
                 self.state = next
                 self.busy = fields[0] == "busy"
                 self.activeOperation = self.busy && UUID(uuidString: String(fields[2])) != nil ? String(fields[2]) : nil
@@ -180,6 +183,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
                 if let token = self.activeOperation, lines.count > 2, self.cancellation == nil {
                     self.openInput(lines[2], token: token)
                 }
+            } else {
+                self.hasVPNStatus = false
             }
             if self.busy || self.uptime >= (self.pendingUntil ?? .infinity) {
                 self.pendingUntil = nil
@@ -249,13 +254,13 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             let selectable: Bool
             switch route.kind {
             case .localProxy(true):
-                title = "\(route.name) · Codex 已连接"
+                title = "\(route.name) · 已连接"
                 selectable = true
             case .localProxy(false):
-                title = "\(route.name) · 未检测到 Codex 连接"
+                title = "\(route.name) · 未检测到连接"
                 selectable = false
             case .systemVPN:
-                title = "\(route.name) · 无单应用代理接口"
+                title = "\(route.name) · 不可切换"
                 selectable = false
             }
             let item = addItem(title, action: #selector(selectCodexProxy(_:)), to: menu)
@@ -356,11 +361,24 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             item?.button?.image = icon
             item?.button?.toolTip = hint
         }
-        if menuStatus?.title != hint { menuStatus?.title = hint }
+        let menuTitle: String
+        if cancellation != nil {
+            menuTitle = "取消中"
+        } else if isTransitioning {
+            menuTitle = "切换中"
+        } else {
+            switch state {
+            case .connected: menuTitle = "VPN 已连接"
+            case .running: menuTitle = "VPN 运行中"
+            case .stopped: menuTitle = "VPN 已关闭"
+            }
+        }
+        if menuStatus?.title != menuTitle { menuStatus?.title = menuTitle }
         menuCancel?.isHidden = !isTransitioning || cancellation != nil
         if let image = connected ? connectedOrb : disabledOrb {
             orb?.update(image: image, hint: hint, phase: phase)
         }
+        orb?.setExitBubbleAvailable(hasVPNStatus && !isTransitioning)
         if isTransitioning {
             let seconds = max(0, countdown ?? Int(elapsed))
             let time = String(format: "%d:%02d", seconds / 60, seconds % 60)
@@ -383,6 +401,16 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     @objc private func connect() { run("connect") }
     @objc private func disconnect() { run("disconnect") }
     @objc private func quit() { NSApp.terminate(nil) }
+
+    private func confirmOrbExit() {
+        guard hasVPNStatus, !isTransitioning else { return }
+        if state == .stopped {
+            quit()
+        } else {
+            run("disconnect", quitWhenFinished: true)
+        }
+    }
+
     @objc private func toggleOrb() {
         guard let orb else { return }
         if orb.isVisible { orb.hide() } else { orb.show() }
@@ -390,7 +418,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         drawIcons()
     }
 
-    private func run(_ action: String) {
+    private func run(_ action: String, quitWhenFinished: Bool = false) {
         guard !isTransitioning else { return }
         workerRunning = true
         lastInput = nil
@@ -398,6 +426,10 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         updateDisplay()
         runMonitor([action], worker: true) { [weak self] code, raw in
             guard let self else { return }
+            if quitWhenFinished, code == 0, self.cancellation == nil {
+                self.quit()
+                return
+            }
             self.workerRunning = false
             self.pendingUntil = nil
             self.progress = ""

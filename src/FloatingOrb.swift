@@ -12,10 +12,12 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
     private let view: OrbView
     private let statusPanel: NSPanel
     private let statusPill = StatusPill(frame: .zero)
+    private let quit: () -> Void
 
     var isVisible: Bool { panel.isVisible }
 
-    init(image: NSImage, toggle: @escaping () -> Void) {
+    init(image: NSImage, toggle: @escaping () -> Void, quit: @escaping () -> Void) {
+        self.quit = quit
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -61,6 +63,8 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
     }
 
     func hide() {
+        view.cancelPendingClick()
+        dismissExitBubble()
         panel.orderOut(nil)
         statusPanel.orderOut(nil)
     }
@@ -77,11 +81,16 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
 
     func showStatus(_ text: String, time: String? = nil, isCountdown: Bool = false,
                     step: String? = nil, phase: Double? = nil, tone: StatusTone = .neutral) {
+        guard statusPill.onConfirm == nil else { return }
         guard isVisible, !text.isEmpty else {
             if statusPanel.isVisible { statusPanel.orderOut(nil) }
             return
         }
         let content = StatusPill.Content(text: text, time: time, isCountdown: isCountdown, step: step, tone: tone)
+        displayStatus(content, phase: phase)
+    }
+
+    private func displayStatus(_ content: StatusPill.Content, phase: Double?) {
         let changed = statusPill.content != content
         statusPill.content = content
         statusPill.phase = phase
@@ -93,6 +102,40 @@ final class FloatingOrb: NSObject, NSWindowDelegate {
             positionStatus()
             statusPanel.orderFrontRegardless()
         }
+    }
+
+    func setExitBubbleAvailable(_ available: Bool) {
+        if available {
+            if view.onDoubleClick == nil {
+                view.onDoubleClick = { [weak self] in self?.toggleExitBubble() }
+            }
+        } else {
+            view.onDoubleClick = nil
+            dismissExitBubble()
+        }
+    }
+
+    private func toggleExitBubble() {
+        guard isVisible else { return }
+        if statusPill.onConfirm != nil {
+            dismissExitBubble()
+            return
+        }
+        statusPill.onConfirm = { [weak self] in
+            guard let self else { return }
+            self.dismissExitBubble()
+            self.quit()
+        }
+        statusPanel.ignoresMouseEvents = false
+        displayStatus(.init(text: "您打算关闭 Ashley VPN 吗？", time: nil, isCountdown: false, step: nil,
+                            tone: .neutral), phase: nil)
+    }
+
+    private func dismissExitBubble() {
+        guard statusPill.onConfirm != nil else { return }
+        statusPill.onConfirm = nil
+        statusPanel.ignoresMouseEvents = true
+        statusPanel.orderOut(nil)
     }
 
     private func positionStatus() {
@@ -148,8 +191,23 @@ private final class StatusPill: NSView {
     private static let messageInset: CGFloat = 38
     private static let trailingInset: CGFloat = 10
     private static let gap: CGFloat = 10
-    var content = Content(text: "", time: nil, isCountdown: false, step: nil, tone: .neutral)
+    private static let confirmLeadingInset: CGFloat = 16
+    private static let confirmButtonWidth: CGFloat = 54
+    private let confirmationLabel = NSTextField(labelWithString: "")
+    private let confirmationButton = ConfirmationButton()
+    var content = Content(text: "", time: nil, isCountdown: false, step: nil, tone: .neutral) {
+        didSet { if oldValue.text != content.text { confirmationLabel.stringValue = content.text } }
+    }
     var phase: Double?
+    var onConfirm: (() -> Void)? {
+        didSet {
+            let confirming = onConfirm != nil
+            confirmationLabel.isHidden = !confirming
+            confirmationButton.isHidden = !confirming
+            setAccessibilityElement(!confirming)
+            needsLayout = true
+        }
+    }
 
     private let textFont = NSFont.systemFont(ofSize: 13, weight: .regular)
     private let timeFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
@@ -157,11 +215,50 @@ private final class StatusPill: NSView {
     private let foreground = NSColor(white: 0.97, alpha: 1)
     private let muted = NSColor(white: 0.70, alpha: 1)
 
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        confirmationLabel.font = textFont
+        confirmationLabel.textColor = foreground
+        confirmationLabel.lineBreakMode = .byTruncatingTail
+        confirmationLabel.isHidden = true
+        addSubview(confirmationLabel)
+
+        confirmationButton.title = "确认"
+        confirmationButton.bezelStyle = .rounded
+        confirmationButton.controlSize = .small
+        confirmationButton.appearance = NSAppearance(named: .darkAqua)
+        confirmationButton.target = self
+        confirmationButton.action = #selector(confirmExit)
+        confirmationButton.setAccessibilityLabel("确认退出 Ashley VPN")
+        confirmationButton.isHidden = true
+        addSubview(confirmationButton)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
     var preferredWidth: CGFloat {
-        Self.messageInset + textWidth(content.text, font: textFont) + Self.trailingInset
+        if onConfirm != nil {
+            return Self.confirmLeadingInset + textWidth(content.text, font: textFont)
+                + Self.gap + Self.confirmButtonWidth + Self.trailingInset
+        }
+        return Self.messageInset + textWidth(content.text, font: textFont) + Self.trailingInset
             + (content.time == nil ? 0 : textWidth(content.time, font: timeFont) + Self.gap)
             + (content.step == nil ? 0 : textWidth(content.step, font: stepFont) + 36)
     }
+
+    override func layout() {
+        super.layout()
+        guard onConfirm != nil else { return }
+        let buttonHeight: CGFloat = 26
+        let buttonX = bounds.maxX - Self.trailingInset - Self.confirmButtonWidth
+        confirmationButton.frame = NSRect(x: buttonX, y: floor(bounds.midY - buttonHeight / 2),
+                                          width: Self.confirmButtonWidth, height: buttonHeight)
+        let labelHeight = confirmationLabel.intrinsicContentSize.height
+        confirmationLabel.frame = NSRect(x: Self.confirmLeadingInset, y: floor(bounds.midY - labelHeight / 2),
+                                         width: max(0, buttonX - Self.gap - Self.confirmLeadingInset), height: labelHeight)
+    }
+
+    @objc private func confirmExit() { onConfirm?() }
 
     override func draw(_ dirtyRect: NSRect) {
         let body = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
@@ -171,6 +268,7 @@ private final class StatusPill: NSView {
         NSColor(white: 0.23, alpha: 1).setStroke()
         body.lineWidth = 1
         body.stroke()
+        guard onConfirm == nil else { return }
         drawIndicator()
 
         var right = bounds.maxX - Self.trailingInset
@@ -241,13 +339,21 @@ private final class StatusPill: NSView {
 }
 
 @MainActor
+private final class ConfirmationButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+@MainActor
 private final class OrbView: NSView {
     var image: NSImage
     var phase: Double?
+    var onDoubleClick: (() -> Void)?
     private let toggle: () -> Void
+    private var pendingClick: Task<Void, Never>?
     private var mouseStart = NSPoint.zero
     private var windowStart = NSPoint.zero
     private var didDrag = false
+    private var isDoubleClick = false
 
     init(image: NSImage, toggle: @escaping () -> Void) {
         self.image = image
@@ -269,6 +375,8 @@ private final class OrbView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        isDoubleClick = event.clickCount == 2 && pendingClick != nil
+        if isDoubleClick { cancelPendingClick() }
         mouseStart = NSEvent.mouseLocation
         windowStart = window?.frame.origin ?? .zero
         didDrag = false
@@ -279,19 +387,44 @@ private final class OrbView: NSView {
         let x = point.x - mouseStart.x
         let y = point.y - mouseStart.y
         guard didDrag || abs(x) >= 3 || abs(y) >= 3 else { return }
+        cancelPendingClick()
         didDrag = true
         window?.setFrameOrigin(NSPoint(x: windowStart.x + x, y: windowStart.y + y))
     }
 
     override func mouseUp(with event: NSEvent) {
-        if !didDrag && bounds.contains(convert(event.locationInWindow, from: nil)) { toggle() }
+        guard !didDrag, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        if isDoubleClick {
+            onDoubleClick?()
+        } else if event.clickCount == 1 {
+            cancelPendingClick()
+            let delay = UInt64(NSEvent.doubleClickInterval * 1_000_000_000)
+            pendingClick = Task { [weak self] in
+                do { try await Task.sleep(nanoseconds: delay) } catch { return }
+                guard !Task.isCancelled, let self else { return }
+                self.pendingClick = nil
+                self.toggle()
+            }
+        }
+    }
+
+    func cancelPendingClick() {
+        pendingClick?.cancel()
+        pendingClick = nil
     }
 
     override func accessibilityPerformPress() -> Bool {
+        cancelPendingClick()
         toggle()
         return true
     }
 
+    override func accessibilityPerformShowMenu() -> Bool {
+        guard let onDoubleClick else { return false }
+        cancelPendingClick()
+        onDoubleClick()
+        return true
+    }
 }
 
 @MainActor
