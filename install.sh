@@ -7,6 +7,13 @@ source "$root/src/check-globalprotect.sh"
 target='/Applications/Ashley VPN.app'
 domain='com.ashley.vpn.companion'
 
+# Ashley orange sampled from the sign-in screen, with an indexed-color fallback.
+case "${COLORTERM:-}:${TERM:-}" in
+  truecolor:*|24bit:*) install_accent='1;38;2;236;153;76' ;;
+  *:*256color*) install_accent='1;38;5;208' ;;
+  *) install_accent='1;33' ;;
+esac
+
 install_paint() {
   if [[ -t 1 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
     printf '\033[%sm%s\033[0m' "$1" "$2"
@@ -17,7 +24,7 @@ install_paint() {
 
 install_section() {
   printf '\n  '
-  install_paint '1;36' "$1"
+  install_paint "$install_accent" "$1"
   printf '  '
   install_paint '2' '────────────────────────'
   printf '\n'
@@ -29,7 +36,7 @@ install_message() {
     done) color='1;32' icon='✓' ;;
     warn) color='1;33' icon='!' ;;
     error) color='1;31' icon='✕' ;;
-    *) color='1;36' icon='›' ;;
+    *) color="$install_accent" icon='›' ;;
   esac
   printf '  '
   install_paint "$color" "$icon"
@@ -167,7 +174,7 @@ check_application_directory() {
 }
 
 printf '\n'
-install_paint '1;36' '  ▍ Ashley VPN'
+install_paint "$install_accent" '  ▍ Ashley VPN'
 printf '  安装程序\n'
 install_section '安装检查'
 if [[ "$(/usr/bin/uname -s)" != Darwin ]]; then
