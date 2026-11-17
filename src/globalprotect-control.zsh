@@ -266,9 +266,15 @@ _gp-terminal-text() {
     return
   fi
   case "$1" in
-    brand)    gpStyle='1;36' ;;
+    brand)
+      case "${ASHLEY_VPN_TERMINAL_PROFILE:-}:${COLORTERM:-}:${TERM:-}" in
+        1:*) gpStyle='1;91' ;;
+        *:truecolor:*|*:24bit:*) gpStyle='1;38;2;215;119;87' ;;
+        *:*:*256color*) gpStyle='1;38;5;173' ;;
+        *) gpStyle='1;33' ;;
+      esac
+      ;;
     heading)  gpStyle='1' ;;
-    selected) gpStyle='1;7' ;;
     success)  gpStyle='1;32' ;;
     warning)  gpStyle='1;33' ;;
     error)    gpStyle='1;31' ;;
@@ -279,8 +285,8 @@ _gp-terminal-text() {
 
 _gp-terminal-title() {
   {
-    _gp-terminal-text brand '  ▍ Ashley VPN'
-    printf '  '
+    _gp-terminal-text brand '  ✻ Ashley VPN'
+    _gp-terminal-text muted '  ·  '
     _gp-terminal-text heading "$1"
     printf '\n'
   } >&2
@@ -460,13 +466,13 @@ _gp-wifi-picker() {
         fi
         for (( gpIndex = gpFirst; gpIndex <= gpLast; gpIndex++ )); do
           gpLabel=$gpVisible[gpIndex]
-          gpMarker=' ' gpTone=heading gpBadge=''
+          gpMarker=' ' gpTone=normal gpBadge=''
           (( gpIndex > gpCount )) && gpTone=muted
           if (( gpIndex <= gpCount )) && [[ "$gpLabel" == "$gpCurrent" ]]; then
             gpBadge='  ● 当前'
           fi
           if (( gpIndex == gpSelected )); then
-            gpMarker='›' gpTone=selected
+            gpMarker='❯' gpTone=heading
           fi
           gpLabelWidth=$((gpWidth - 2 - ${(m)#gpBadge}))
           _gp-terminal-text brand "  $gpMarker "

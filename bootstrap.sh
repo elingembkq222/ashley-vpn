@@ -51,15 +51,15 @@ draw_download_progress() {
     printf -v prefix '%*s' "$left" ''
     printf -v bar '%*s' "$filled" ''
     printf -v suffix '%*s' "$remaining" ''
-    printf '\r\033[2K  下载  [%s\033[%sm%s\033[0m%s]  %s' \
-        "${prefix// /░}" "$accent" "${bar// /█}" "${suffix// /░}" "$reading" >&2
+    printf '\r\033[2K  \033[%sm↓\033[0m  下载  [\033[2m%s\033[0m\033[%sm%s\033[0m\033[2m%s\033[0m]  %s' \
+        "$accent" "${prefix// /─}" "$accent" "${bar// /━}" "${suffix// /─}" "$reading" >&2
 }
 
 if [[ -t 2 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
     download_animated=true
     case "${COLORTERM:-}:${TERM:-}" in
-        truecolor:*|24bit:*) accent='1;38;2;236;153;76' ;;
-        *:*256color*) accent='1;38;5;208' ;;
+        truecolor:*|24bit:*) accent='1;38;2;215;119;87' ;;
+        *:*256color*) accent='1;38;5;173' ;;
         *) accent='1;33' ;;
     esac
     printf '\n' >&2
