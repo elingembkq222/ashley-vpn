@@ -131,7 +131,9 @@ private func report(_ message: String, status: Int32 = 0) -> Int32 {
     return status
 }
 
-private func checkGlobalProtectSigning(repairFingerprint: String?, restorePrompt: Bool) -> Int32 {
+private func checkGlobalProtectSigning(
+    expectedFingerprint: String? = nil, repair: Bool = false, restorePrompt: Bool = false
+) -> Int32 {
     let apps: [SigningApplication] = components.compactMap { path, identifier in
         trustedApplication(path, identifier: identifier).map { (path, $0) }
     }
@@ -142,7 +144,7 @@ private func checkGlobalProtectSigning(repairFingerprint: String?, restorePrompt
     guard SecKeychainOpen("/Library/Keychains/System.keychain", &system) == errSecSuccess,
           let system else { return report("无法读取系统钥匙串。", status: 1) }
     // The check must remain quiet when the user needs no repair.
-    guard SecKeychainSetUserInteractionAllowed(repairFingerprint != nil) == errSecSuccess else {
+    guard SecKeychainSetUserInteractionAllowed(repair) == errSecSuccess else {
         return report("无法配置钥匙串访问，跳过证书权限检查。", status: 1)
     }
     let query = [
@@ -153,7 +155,9 @@ private func checkGlobalProtectSigning(repairFingerprint: String?, restorePrompt
     ] as CFDictionary
     var result: CFTypeRef?
     let queryStatus = SecItemCopyMatching(query, &result)
-    if queryStatus == errSecItemNotFound { return report("系统钥匙串无集团 VPN 客户端证书，跳过权限修复。") }
+    if queryStatus == errSecItemNotFound {
+        return report("系统钥匙串无集团 VPN 客户端证书，跳过权限修复。", status: expectedFingerprint == nil ? 0 : 1)
+    }
     guard queryStatus == errSecSuccess, let identities = result as? [SecIdentity] else {
         return report("无法读取系统钥匙串中的客户端证书（\(queryStatus)）。", status: 1)
     }
@@ -164,10 +168,10 @@ private func checkGlobalProtectSigning(repairFingerprint: String?, restorePrompt
         return (identity, certificate)
     }
     guard matches.count == 1, let (identity, certificate) = matches.first else {
-        return report("无法唯一定位集团 VPN 客户端证书，保留钥匙串原有权限。")
+        return report("无法唯一定位集团 VPN 客户端证书，保留钥匙串原有权限。", status: expectedFingerprint == nil ? 0 : 1)
     }
     let expected = fingerprint(certificate)
-    if let repairFingerprint, repairFingerprint != expected {
+    if let expectedFingerprint, expectedFingerprint != expected {
         return report("集团 VPN 证书已变化，请重新检查后再授权。", status: 1)
     }
 
@@ -202,8 +206,9 @@ private func checkGlobalProtectSigning(repairFingerprint: String?, restorePrompt
         return report("集团 VPN 私钥访问权限已齐全。")
     }
     let missingNames = missing.map { URL(fileURLWithPath: $0.path).lastPathComponent }.joined(separator: "、")
-    guard repairFingerprint != nil else {
+    guard repair else {
         let message = restorePrompt ? "检测到集团 VPN 私钥已开启逐次密码提示。" : "缺少私钥访问权限：\(missingNames)"
+        if expectedFingerprint != nil { return report(message, status: 1) }
         FileHandle.standardError.write(Data((message + "\n").utf8))
         return report(expected, status: 3)
     }
@@ -232,10 +237,12 @@ private func checkGlobalProtectSigning(repairFingerprint: String?, restorePrompt
 
 let args = CommandLine.arguments
 if args.count == 2 && ["--check", "--check-prompt"].contains(args[1]) {
-    exit(checkGlobalProtectSigning(repairFingerprint: nil, restorePrompt: args[1] == "--check-prompt"))
+    exit(checkGlobalProtectSigning(restorePrompt: args[1] == "--check-prompt"))
 }
-if args.count == 3 && ["--repair", "--restore-prompt"].contains(args[1]),
+if args.count == 3 && ["--repair", "--restore-prompt", "--verify"].contains(args[1]),
    args[2].range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil {
-    exit(checkGlobalProtectSigning(repairFingerprint: args[2], restorePrompt: args[1] == "--restore-prompt"))
+    exit(checkGlobalProtectSigning(
+        expectedFingerprint: args[2], repair: args[1] != "--verify", restorePrompt: args[1] == "--restore-prompt"
+    ))
 }
 exit(2)
