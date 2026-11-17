@@ -10,7 +10,11 @@ fi
 stage=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ashley-vpn.XXXXXX")
 trap '/bin/rm -R -- "$stage"' EXIT
 printf '\n  › %s\n' '正在下载 Ashley VPN 安装包…'
-if ! /usr/bin/curl -q -fsSL --proto '=https' --proto-redir '=https' \
+curl_progress=(-sS)
+if [[ -t 2 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
+    curl_progress=(--progress-bar -S)
+fi
+if ! /usr/bin/curl -q -fL "${curl_progress[@]}" --proto '=https' --proto-redir '=https' \
     'https://codeload.github.com/elingembkq222/ashley-vpn/tar.gz/refs/heads/main' \
     -o "$stage/source.tar.gz"; then
     printf '  ✕  %s\n' '下载安装包失败，请确认能访问 GitHub 后重试。' >&2
