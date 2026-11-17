@@ -9,7 +9,7 @@ ashley_terminal_accent() {
 }
 
 ashley_banner_paint() {
-  if [[ -t 1 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
+  if [[ ( -t 1 || "${ASHLEY_VPN_BUFFERED_TTY:-}" == 1 ) && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
     printf '\033[%sm%s\033[0m' "$1" "$2"
   else
     printf '%s' "$2"
