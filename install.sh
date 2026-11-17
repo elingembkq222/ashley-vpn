@@ -43,6 +43,47 @@ install_message() {
   printf '  %s\n' "$2"
 }
 
+stop_install_animation() {
+  [[ -n "$ticker" ]] || return 0
+  kill -TERM "$ticker" 2>/dev/null || true
+  wait "$ticker" 2>/dev/null || true
+  ticker=''
+  printf '\r\033[2K'
+}
+
+install_wait() {
+  local label="$1" ticker='' status_code=0
+  shift
+  if [[ ! -t 1 || "${TERM:-dumb}" == dumb || -n "${NO_COLOR:-}" ]]; then
+    install_message info "$label"
+    "$@"
+    return
+  fi
+
+  setopt localoptions localtraps
+  trap 'stop_install_animation; exit 130' INT
+  trap 'stop_install_animation; exit 143' TERM
+  (
+    local frame
+    local -a frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+    trap 'exit 0' TERM
+    /bin/sleep 0.12
+    while true; do
+      for frame in "${frames[@]}"; do
+        printf '\r\033[2K  \033[%sm%s\033[0m  %s' "$install_accent" "$frame" "$label"
+        /bin/sleep 0.12
+      done
+    done
+  ) &
+  ticker=$!
+  {
+    "$@" || status_code=$?
+  } always {
+    stop_install_animation
+  }
+  return "$status_code"
+}
+
 mode="${1:-}"
 if (( $# > 1 )) || [[ -n "$mode" && "$mode" != --check && "$mode" != --repair-keychain && "$mode" != --restore-keychain-prompt ]]; then
   print -u2 -- '用法：./install.sh [--check | --repair-keychain | --restore-keychain-prompt]'
@@ -54,24 +95,40 @@ fail_check() {
   exit 1
 }
 
-run_build_step() {
+log_build_output() {
+  "$@" > "$stage/build.log" 2>&1
+}
+
+report_build_failure() {
   local step="$1" diagnostics
-  shift
-  if "$@" > "$stage/build.log" 2>&1; then
-    return 0
-  fi
   install_message error "$step。" >&2
   if diagnostics=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ashley-vpn-build.XXXXXX" 2>/dev/null) &&
      /bin/cp "$stage/build.log" "$diagnostics" 2>/dev/null; then
     install_message info "诊断日志  $diagnostics" >&2
   fi
-  exit 1
 }
 
-build_certificate_checker() {
-  install_message info '正在准备证书权限检查…'
-  MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建集团 VPN 证书权限组件失败' /usr/bin/xcrun swiftc -O \
+run_build_step() {
+  local label="$1" failure="$2"
+  shift 2
+  if ! install_wait "$label" log_build_output "$@"; then
+    report_build_failure "$failure"
+    exit 1
+  fi
+}
+
+compile_certificate_checker() {
+  MACOSX_DEPLOYMENT_TARGET=12.0 /usr/bin/xcrun swiftc -O \
     "$root/src/globalprotect-keychain.swift" -o "$stage/globalprotect-keychain"
+}
+
+capture_certificate_check() {
+  local checker="$1" option="$2"
+  if [[ ! -x "$checker" ]] && ! log_build_output compile_certificate_checker; then
+    certificate_build_failed=true
+    return 1
+  fi
+  "$checker" "$option" > "$stage/certificate-check.out" 2> "$stage/certificate-check.err"
 }
 
 show_certificate_help() {
@@ -105,6 +162,7 @@ APPLESCRIPT
 
 repair_certificate_access() {
   local checker="$stage/globalprotect-keychain" result check_status=0
+  local certificate_build_failed=false
   local check_option=--check write_option=--repair
   local message='验证管理员身份后，将补齐集团 VPN 私钥访问列表中缺少的授权。'
   if [[ "$mode" == --restore-keychain-prompt ]]; then
@@ -112,8 +170,15 @@ repair_certificate_access() {
     write_option=--restore-prompt
     message='验证管理员身份后，将取消这把集团 VPN 私钥的逐次密码提示，保留现有受信应用。'
   fi
-  install_message info '正在检查系统钥匙串…'
-  result=$("$checker" "$check_option") || check_status=$?
+  install_wait '正在检查集团 VPN 证书权限…' capture_certificate_check "$checker" "$check_option" || check_status=$?
+  if [[ "$certificate_build_failed" == true ]]; then
+    report_build_failure '构建集团 VPN 证书权限组件失败'
+    return 1
+  fi
+  result=$(<"$stage/certificate-check.out")
+  if [[ -s "$stage/certificate-check.err" ]]; then
+    install_message warn "$(<"$stage/certificate-check.err")" >&2
+  fi
   if (( check_status != 3 )); then
     case "$check_status:$result" in
       0:*已齐全*|0:*未开启逐次*) install_message done "$result" ;;
@@ -233,7 +298,6 @@ if [[ -n "$mode" || "$installed_current" == true ]]; then
   stage=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ashley-vpn-keychain.XXXXXX")
   trap '/bin/rm -R -- "$stage"' EXIT
   install_section '证书权限'
-  build_certificate_checker
   repair_certificate_access
   exit 0
 fi
@@ -265,16 +329,15 @@ resources="$app/Contents/Resources"
 /bin/chmod 755 "$resources/"{connect,disconnect,toggle}.command
 /usr/bin/uuidgen > "$resources/installation-id"
 
-install_message info '正在构建 Ashley VPN…'
-MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建 Ashley VPN 主程序失败' /usr/bin/xcrun swiftc -parse-as-library -O \
+MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '正在构建 Ashley VPN…' '构建 Ashley VPN 主程序失败' /usr/bin/xcrun swiftc -parse-as-library -O \
   "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" \
   "$root/src/WiFiScan.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
-MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建钥匙串组件失败' /usr/bin/xcrun swiftc -O \
+MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '正在构建钥匙串组件…' '构建钥匙串组件失败' /usr/bin/xcrun swiftc -O \
   "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
-build_certificate_checker
-install_message info '正在签名并验证应用…'
-run_build_step '签名 Ashley VPN 失败' /usr/bin/codesign --force --deep --sign - "$app"
-run_build_step '验证 Ashley VPN 签名失败' /usr/bin/codesign --verify --deep --strict "$app"
+run_build_step '正在构建证书权限组件…' '构建集团 VPN 证书权限组件失败' compile_certificate_checker
+run_build_step '正在签名 Ashley VPN…' '签名 Ashley VPN 失败' /usr/bin/codesign --force --deep --sign - "$app"
+run_build_step '正在验证应用签名…' '验证 Ashley VPN 签名失败' /usr/bin/codesign --verify --deep --strict "$app"
+install_message done '应用构建和签名验证完成'
 /bin/zsh -f "$root/src/install-cli.zsh"
 
 # Uninstall the old bundle only after the new one is ready.
