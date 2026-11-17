@@ -8,6 +8,7 @@ A macOS menu bar app for connecting to the company VPN through GlobalProtect.
 | :---: | --- | --- |
 | ✅ | macOS 12 or later | Update macOS if needed. |
 | ✅ | Company GlobalProtect client | Install it through company IT. |
+| ✅ | Company VPN client certificate and private key (to connect) | Import the IT-issued certificate and private key into the System keychain. The private key needs access grants for `GlobalProtect`, `PanGPS`, and `com.apple.identity.export`. |
 | ✅ | Xcode Command Line Tools | Run `xcode-select --install` if the tools are missing. |
 | ✅ | Write access to `/Applications` | Use a macOS account with permission to install apps there. |
 
@@ -17,7 +18,7 @@ A macOS menu bar app for connecting to the company VPN through GlobalProtect.
 curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | bash
 ```
 
-Run the same command to update or repair VPN certificate permissions. If the VPN private key is missing a GlobalProtect, PanGPS, or `com.apple.identity.export` grant, the installer prompts for administrator authentication, adds the missing grants, and verifies them.
+Run the same command to update or repair VPN certificate permissions. If any access grants listed above are missing, the installer prompts for administrator authentication, adds the missing grants, and verifies them.
 
 If the private key was inadvertently set to prompt for a password on every use, rerun the pipeline with `bash -s -- --restore-keychain-prompt` in place of `bash`.
 
