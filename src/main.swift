@@ -33,6 +33,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private var feedbackUntil: TimeInterval = 0
     private var readingStatus = false
     private var statusTimer: Timer?
+    private var terminalInputActive = false
     private var animationTimer: Timer?
     private var animationStarted: TimeInterval = 0
     private var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
@@ -53,7 +54,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         item.menu = makeMenu()
         updateDisplay()
         refreshStatus()
-        statusTimer = makeTimer(interval: 1.5) { [weak self] in self?.refreshStatus() }
+        setStatusCadence(terminalInputActive: false)
     }
 
     func applicationDidChangeScreenParameters(_ notification: Notification) {
@@ -109,6 +110,13 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         return timer
     }
 
+    private func setStatusCadence(terminalInputActive: Bool) {
+        guard statusTimer == nil || self.terminalInputActive != terminalInputActive else { return }
+        self.terminalInputActive = terminalInputActive
+        statusTimer?.invalidate()
+        statusTimer = makeTimer(interval: terminalInputActive ? 0.4 : 1.5) { [weak self] in self?.refreshStatus() }
+    }
+
     private func runMonitor(_ arguments: [String], worker: Bool = false,
                             completion: @escaping @MainActor (Int32, String) -> Void) {
         guard let runner = Bundle.main.url(forResource: "run-vpn", withExtension: "zsh") else {
@@ -157,6 +165,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
                 self.progress = self.busy && lines.count > 1 ? lines[1] : ""
                 self.progressStep = self.busy && lines.count > 3 && !lines[3].isEmpty ? lines[3] : nil
                 self.progressRemaining = self.busy && lines.count > 4 ? Int(lines[4]) : nil
+                self.setStatusCadence(terminalInputActive: self.activeOperation != nil && lines.count > 2 && !lines[2].isEmpty)
                 if let token = self.activeOperation, lines.count > 2, self.cancellation == nil {
                     self.openInput(lines[2], token: token)
                 }
