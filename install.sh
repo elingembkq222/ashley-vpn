@@ -7,6 +7,35 @@ source "$root/src/check-globalprotect.sh"
 target='/Applications/Ashley VPN.app'
 domain='com.ashley.vpn.companion'
 
+install_paint() {
+  if [[ -t 1 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
+    printf '\033[%sm%s\033[0m' "$1" "$2"
+  else
+    printf '%s' "$2"
+  fi
+}
+
+install_section() {
+  printf '\n  '
+  install_paint '1;36' "$1"
+  printf '  '
+  install_paint '2' '────────────────────────'
+  printf '\n'
+}
+
+install_message() {
+  local color icon
+  case "$1" in
+    done) color='1;32' icon='✓' ;;
+    warn) color='1;33' icon='!' ;;
+    error) color='1;31' icon='✕' ;;
+    *) color='1;36' icon='›' ;;
+  esac
+  printf '  '
+  install_paint "$color" "$icon"
+  printf '  %s\n' "$2"
+}
+
 mode="${1:-}"
 if (( $# > 1 )) || [[ -n "$mode" && "$mode" != --check && "$mode" != --repair-keychain && "$mode" != --restore-keychain-prompt ]]; then
   print -u2 -- '用法：./install.sh [--check | --repair-keychain | --restore-keychain-prompt]'
@@ -14,8 +43,7 @@ if (( $# > 1 )) || [[ -n "$mode" && "$mode" != --check && "$mode" != --repair-ke
 fi
 
 fail_check() {
-  print -ru2 -- "[失败] $1"
-  print -ru2 -- '安装已停止。'
+  install_message error "$1 安装已停止。" >&2
   exit 1
 }
 
@@ -25,15 +53,16 @@ run_build_step() {
   if "$@" > "$stage/build.log" 2>&1; then
     return 0
   fi
-  print -ru2 -- "[失败] $step。"
+  install_message error "$step。" >&2
   if diagnostics=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ashley-vpn-build.XXXXXX" 2>/dev/null) &&
      /bin/cp "$stage/build.log" "$diagnostics" 2>/dev/null; then
-    print -ru2 -- "诊断日志：$diagnostics"
+    install_message info "诊断日志  $diagnostics" >&2
   fi
   exit 1
 }
 
 build_certificate_checker() {
+  install_message info '正在准备证书权限检查…'
   MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建集团 VPN 证书权限组件失败' /usr/bin/xcrun swiftc -O \
     "$root/src/globalprotect-keychain.swift" -o "$stage/globalprotect-keychain"
 }
@@ -76,33 +105,38 @@ repair_certificate_access() {
     write_option=--restore-prompt
     message='验证管理员身份后，将取消这把集团 VPN 私钥的逐次密码提示，保留现有受信应用。'
   fi
-  print -r -- '正在检查集团 VPN 证书权限…'
+  install_message info '正在检查系统钥匙串…'
   result=$("$checker" "$check_option") || check_status=$?
   if (( check_status != 3 )); then
-    print -r -- "$result"
+    case "$check_status:$result" in
+      0:*已齐全*|0:*未开启逐次*) install_message done "$result" ;;
+      0:*) install_message info "$result" ;;
+      4:*) install_message warn "$result" >&2 ;;
+      *) install_message error "$result" >&2 ;;
+    esac
     if (( check_status == 4 )); then
       show_certificate_help "$result"
     fi
     return "$check_status"
   fi
   if [[ ! -t 2 ]]; then
-    print -ru2 -- '修复私钥权限需要管理员验证，请在 macOS 终端运行。'
+    install_message warn '修复私钥权限需要管理员验证，请在 macOS 终端运行。' >&2
     return 1
   fi
-  print -r -- "$message"
+  install_message warn "$message"
   local repair_result verify_result
-  if ! repair_result=$(/usr/bin/sudo -k -p '请输入本机管理员密码以修复集团 VPN 证书权限：' -- "$checker" "$write_option" "$result" </dev/tty); then
-    print -ru2 -- "$repair_result"
+  if ! repair_result=$(/usr/bin/sudo -k -p '  本机管理员密码：' -- "$checker" "$write_option" "$result" </dev/tty); then
+    [[ -z "$repair_result" ]] || install_message error "$repair_result" >&2
     show_certificate_help '安装器未能完成或验证自动修复。你可以在钥匙串访问中处理。'
     return 1
   fi
   if ! verify_result=$("$checker" --verify "$result"); then
-    print -ru2 -- "$verify_result"
+    install_message error "$verify_result" >&2
     show_certificate_help '当前登录账号未能验证集团 VPN 私钥的授权。你可以在钥匙串访问中检查。'
     return 1
   fi
-  print -r -- "$repair_result"
-  print -r -- '已通过当前登录账号复查集团 VPN 私钥权限。'
+  install_message done "$repair_result"
+  install_message done '已通过当前登录账号复查集团 VPN 私钥权限。'
 }
 
 check_existing_installation() {
@@ -129,11 +163,13 @@ check_application_directory() {
   if [[ ! -w /Applications ]]; then
     fail_check '「应用程序」目录：当前账号无法写入，请切换到有写入权限的账号后重试。'
   fi
-  print -r -- '[通过] 「应用程序」目录：可写入，安装位置可用'
-  print -r -- '全部安装条件已通过。'
+  install_message done '应用程序目录可写入'
 }
 
-print -r -- '正在检查 Ashley VPN 安装条件…'
+printf '\n'
+install_paint '1;36' '  ▍ Ashley VPN'
+printf '  安装程序\n'
+install_section '安装检查'
 if [[ "$(/usr/bin/uname -s)" != Darwin ]]; then
   fail_check '操作系统：Ashley VPN 需要 macOS 12 或更新版本。'
 fi
@@ -142,7 +178,7 @@ major=${version%%.*}
 if [[ "$major" != <-> ]] || (( major < 12 )); then
   fail_check "操作系统：当前为 macOS $version，请升级至 macOS 12 或更新版本。"
 fi
-print -r -- "[通过] 操作系统：macOS $version"
+install_message done "macOS $version"
 
 if [[ -z "${1:-}" ]]; then
   latest_version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$root/src/Info.plist") ||
@@ -157,13 +193,13 @@ fi
 if ! check_globalprotect 2>/dev/null; then
   fail_check '集团 GlobalProtect：客户端未安装或不完整，请通过公司渠道安装后重试。'
 fi
-print -r -- '[通过] 集团 GlobalProtect：已安装'
+install_message done '集团 GlobalProtect 已安装'
 
 if ! /usr/bin/xcrun --find swiftc >/dev/null 2>&1 ||
    ! /usr/bin/xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1; then
   fail_check 'Xcode 命令行工具：找不到 Swift 编译器或 macOS SDK，请运行 xcode-select --install 后重试。'
 fi
-print -r -- '[通过] Xcode 命令行工具：Swift 编译器和 macOS SDK 可用'
+install_message done 'Swift 编译器和 macOS SDK 可用'
 
 if [[ "${1:-}" == --check ]]; then
   check_application_directory
@@ -177,25 +213,27 @@ fi
 (umask 077; /bin/mkdir -p "$state"; : >> "$state/operation.lock")
 zmodload zsh/system
 if ! zsystem flock -t 0 -f install_fd "$state/operation.lock" 2>/dev/null; then
-  print -u2 -- 'Ashley VPN 正在连接或关闭，请等终端操作结束后重试安装。'
+  install_message warn 'Ashley VPN 正在连接或关闭，请等当前操作结束后重试安装。' >&2
   exit 1
 fi
 if [[ -z "$mode" ]]; then
   check_existing_installation
   if [[ "$installed_current" == true ]]; then
-    print -r -- "Ashley VPN $latest_version 已是最新版，无需重装。"
+    install_message done "Ashley VPN $latest_version 已是最新版"
   fi
 fi
 if [[ -n "$mode" || "$installed_current" == true ]]; then
   stage=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ashley-vpn-keychain.XXXXXX")
   trap '/bin/rm -R -- "$stage"' EXIT
+  install_section '证书权限'
   build_certificate_checker
   repair_certificate_access
   exit 0
 fi
 check_application_directory
+install_section '应用构建'
 if [[ -n "$installed_version" ]]; then
-  print -r -- "检测到 Ashley VPN $installed_version，将准备 $latest_version 并移除旧安装。"
+  install_message info "升级 $installed_version → $latest_version"
 fi
 
 stage=$(/usr/bin/mktemp -d /Applications/.ashley-vpn.install.XXXXXX)
@@ -220,20 +258,21 @@ resources="$app/Contents/Resources"
 /bin/chmod 755 "$resources/"{connect,disconnect,toggle}.command
 /usr/bin/uuidgen > "$resources/installation-id"
 
-print -r -- '正在构建 Ashley VPN…'
+install_message info '正在构建 Ashley VPN…'
 MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建 Ashley VPN 主程序失败' /usr/bin/xcrun swiftc -parse-as-library -O \
   "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" \
   "$root/src/WiFiScan.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
 MACOSX_DEPLOYMENT_TARGET=12.0 run_build_step '构建钥匙串组件失败' /usr/bin/xcrun swiftc -O \
   "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
 build_certificate_checker
+install_message info '正在签名并验证应用…'
 run_build_step '签名 Ashley VPN 失败' /usr/bin/codesign --force --deep --sign - "$app"
 run_build_step '验证 Ashley VPN 签名失败' /usr/bin/codesign --verify --deep --strict "$app"
 /bin/zsh -f "$root/src/install-cli.zsh"
 
 # Uninstall the old bundle only after the new one is ready.
 if [[ -d "$target" ]]; then
-  print -r -- '正在移除旧版 Ashley VPN…'
+  install_message info '正在替换旧版 Ashley VPN…'
   process='^/Applications/Ashley VPN\.app/Contents/MacOS/ashley-vpn-menu$'
   /usr/bin/pkill -TERM -u "$EUID" -f "$process" || true
   for attempt in {1..20}; do
@@ -246,7 +285,7 @@ if [[ -d "$target" ]]; then
   /bin/mv "$target" "$stage/previous.app"
 fi
 if ! /bin/mv "$app" "$target"; then
-  print -ru2 -- '[失败] 无法将 Ashley VPN 安装到「应用程序」目录。'
+  install_message error '无法将 Ashley VPN 安装到「应用程序」目录。' >&2
   exit 1
 fi
 
@@ -276,7 +315,10 @@ if [[ -x "$previous_keychain" ]]; then
   fi
 fi
 
+install_section '证书权限'
 if ! repair_certificate_access; then
-  print -ru2 -- 'Ashley VPN 已安装，集团 VPN 证书权限未修复。可在终端重新运行安装命令重试。'
+  install_message warn '证书权限检查未完成，可在终端重新运行安装命令重试。' >&2
 fi
-print -r -- "Ashley VPN 已安装（$latest_version）。打开新的终端窗口，运行 ashleyvpn 启动菜单栏图标。"
+install_section '安装完成'
+install_message done "Ashley VPN $latest_version 已安装"
+install_message info '在新终端运行 ashleyvpn，打开菜单栏图标。'
