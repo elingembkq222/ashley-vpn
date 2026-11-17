@@ -15,11 +15,64 @@ ashley_banner_paint() {
   fi
 }
 
+ashley_can_animate() {
+  [[ -t "$1" && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]
+}
+
+ashley_fit_terminal_text() {
+  local label="$1" width="$2"
+  (( width > 0 )) || return 0
+  if (( ${(m)#label} > width )); then
+    while (( ${(m)#label} >= width )); do label=${label[1,-2]}; done
+    label+='…'
+  fi
+  printf '%s' "$label"
+}
+
+ashley_stop_spinner() {
+  [[ -n "$ashley_spinner_pid" ]] || return 0
+  kill -TERM "$ashley_spinner_pid" 2>/dev/null || true
+  wait "$ashley_spinner_pid" 2>/dev/null || true
+  ashley_spinner_pid=''
+  printf '\r\033[2K' >&$ashley_spinner_fd
+}
+
+ashley_with_spinner() {
+  local ashley_spinner_fd="$1" label="$2" ashley_spinner_pid='' code=0 accent columns
+  shift 2
+  accent=$(ashley_terminal_accent)
+  columns=$(ashley_terminal_columns)
+  # Keep the animation on one line, including its five-column marker prefix.
+  if (( columns > 0 )); then
+    label=$(ashley_fit_terminal_text "$label" "$((columns - 6))")
+  fi
+  setopt localoptions localtraps
+  trap 'ashley_stop_spinner; exit 130' INT
+  trap 'ashley_stop_spinner; exit 143' TERM
+  (
+    local frame
+    trap 'exit 0' TERM
+    /bin/sleep 0.12
+    while true; do
+      for frame in ◐ ◓ ◑ ◒; do
+        printf '\r\033[2K\033[%sm%s\033[0m%s' "$accent" "${label:+  }$frame" "${label:+  }$label" >&$ashley_spinner_fd
+        /bin/sleep 0.12
+      done
+    done
+  ) &
+  ashley_spinner_pid=$!
+  {
+    "$@" || code=$?
+  } always {
+    ashley_stop_spinner
+  }
+  return "$code"
+}
+
 ashley_banner_cell() {
   local label="$1" width="$2" style="$3"
   if (( ${(m)#label} > width )); then
-    local limit=$((width - 1))
-    label="${(mr:$limit:)label}…"
+    label=$(ashley_fit_terminal_text "$label" "$width")
   fi
   ashley_banner_paint "$style" "$label"
   printf '%*s' "$((width - ${(m)#label}))" ''
@@ -36,20 +89,26 @@ ashley_terminal_columns() {
   [[ "$columns" == <1-> ]] && print -r -- "$columns" || print 0
 }
 
+ashley_panel_width() {
+  local columns="$1"
+  # The installer and Wi-Fi picker share this outer width, excluding indentation.
+  print -r -- "$((columns < 36 ? 0 : columns > 80 ? 76 : columns - 4))"
+}
+
 ashley_welcome_panel() {
-  local release="$1" availability="$2" columns="$3" title='Ashley VPN' accent
+  local release="$1" availability="$2" columns="$3" title='Ashley VPN' accent width
   local primary="${4:-}" details="${5:-}" next_title="${6:-}" next_step="${7:-}"
   accent=$(ashley_terminal_accent)
+  width=$(ashley_panel_width "$columns")
   title+=" ${release:+v}${release:-版本未知}"
   printf '\n'
-  if (( columns < 36 )); then
+  if (( width == 0 )); then
     ashley_banner_paint "$accent" "  ✻ $title"
     printf '\n  %s\n' "$availability"
     return
   fi
 
-  # Match the standard installer panel, with two columns of safety at either edge.
-  local width=$((columns > 80 ? 76 : columns - 4)) rule='' top="╭── $title " left_width=20 right_width index
+  local rule='' top="╭── $title " left_width=20 right_width index
   local top_rule=$((width - ${(m)#top} - 1)) bottom_rule=$((width - 2))
   local -a art=('        ▄  ▄' '      ▄ █  █ ▄' '      █  ▄▄  █' '        ████' '        ▀▀▀▀')
   local -a content=("  版本状态  $availability" "  $primary" "  $details" "  $next_title" "  $next_step")

@@ -51,45 +51,15 @@ install_message() {
   printf '  %s\n' "$2"
 }
 
-stop_install_animation() {
-  [[ -n "$ticker" ]] || return 0
-  kill -TERM "$ticker" 2>/dev/null || true
-  wait "$ticker" 2>/dev/null || true
-  ticker=''
-  printf '\r\033[2K'
-}
-
 install_wait() {
-  local label="$1" ticker='' status_code=0
+  local label="$1"
   shift
-  if [[ ! -t 1 || "${TERM:-dumb}" == dumb || -n "${NO_COLOR:-}" ]]; then
+  if ashley_can_animate 1; then
+    ashley_with_spinner 1 "$label" "$@"
+  else
     install_message info "$label"
     "$@"
-    return
   fi
-
-  setopt localoptions localtraps
-  trap 'stop_install_animation; exit 130' INT
-  trap 'stop_install_animation; exit 143' TERM
-  (
-    local frame
-    local -a frames=(◐ ◓ ◑ ◒)
-    trap 'exit 0' TERM
-    /bin/sleep 0.12
-    while true; do
-      for frame in "${frames[@]}"; do
-        printf '\r\033[2K  \033[%sm%s\033[0m  %s' "$install_accent" "$frame" "$label"
-        /bin/sleep 0.12
-      done
-    done
-  ) &
-  ticker=$!
-  {
-    "$@" || status_code=$?
-  } always {
-    stop_install_animation
-  }
-  return "$status_code"
 }
 
 mode="${1:-}"
