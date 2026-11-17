@@ -6,7 +6,7 @@ enum CodexProxyStatus {
 
     struct Route: Equatable, Sendable {
         enum Kind: Equatable, Sendable {
-            case localProxy(connected: Bool, url: URL)
+            case localProxy(url: URL)
             case systemVPN
         }
 
@@ -23,7 +23,7 @@ enum CodexProxyStatus {
         init(_ route: Route) {
             id = route.id
             name = route.name
-            if case let .localProxy(_, url) = route.kind {
+            if case let .localProxy(url) = route.kind {
                 proxyURL = url
             } else {
                 proxyURL = nil
@@ -31,26 +31,18 @@ enum CodexProxyStatus {
         }
     }
 
-    static func routes(codex: URL?, savedProxy: URL?) -> [Route] {
-        let codexPath = codex.map { $0.resolvingSymlinksInPath().path + "/Contents/" }
+    static func routes(savedProxy: URL?) -> [Route] {
         var proxies: [String: Route] = [:]
         let urls = localProxyURLs() + [savedProxy].compactMap { $0 }
         var checked = Set<URL>()
         for url in urls where checked.insert(url).inserted {
             guard let endpoint = loopbackEndpoint(url) else { continue }
-            guard let snapshot = output("/usr/sbin/lsof", ["-nP", "-iTCP@\(endpoint)", "-FfpnT", "-Ts"]) else {
+            guard let snapshot = output("/usr/sbin/lsof", ["-nP", "-iTCP@\(endpoint)", "-sTCP:LISTEN", "-Fp"]) else {
                 continue
             }
-            if let proxy = proxyRoute(snapshot, url: url, endpoint: endpoint,
-                                      codexPath: codexPath, pathForPID: executablePath) {
-                if let prior = proxies[proxy.id], case let .localProxy(connected, preferredURL) = prior.kind {
-                    if case .localProxy(true, _) = proxy.kind, !connected {
-                        proxies[proxy.id] = Route(id: prior.id, name: prior.name,
-                                                  kind: .localProxy(connected: true, url: preferredURL))
-                    }
-                } else {
-                    proxies[proxy.id] = proxy
-                }
+            if let proxy = proxyRoute(snapshot, url: url, pathForPID: executablePath),
+               proxies[proxy.id] == nil {
+                proxies[proxy.id] = proxy
             }
         }
 
@@ -72,31 +64,12 @@ enum CodexProxyStatus {
         }
     }
 
-    static func proxyRoute(_ snapshot: String, url: URL, endpoint: String, codexPath: String?,
-                           pathForPID: (Int32) -> String?) -> Route? {
-        var executable: String?
-        var socket = ""
-        var listeners = Set<String>()
-        var connected = false
-        for line in snapshot.split(whereSeparator: \.isNewline) {
-            if line.hasPrefix("p") {
-                executable = Int32(line.dropFirst()).flatMap(pathForPID)
-                socket = ""
-            } else if line.hasPrefix("f") {
-                socket = ""
-            } else if line.hasPrefix("n") {
-                socket = String(line.dropFirst())
-            } else if line == "TST=LISTEN", let executable {
-                listeners.insert(executable)
-            } else if line == "TST=ESTABLISHED", let codexPath, executable?.hasPrefix(codexPath) == true,
-                      socket.hasSuffix("->" + endpoint) {
-                connected = true
-            }
-        }
-        let owners = listeners.compactMap(proxyOwner)
-        let ids = Set(owners.map(\.id))
-        guard owners.count == listeners.count, ids.count == 1, let owner = owners.first else { return nil }
-        return Route(id: owner.id, name: owner.name, kind: .localProxy(connected: connected, url: url))
+    static func proxyRoute(_ snapshot: String, url: URL, pathForPID: (Int32) -> String?) -> Route? {
+        let listeners = Set(snapshot.split(whereSeparator: \.isNewline).filter { $0.hasPrefix("p") })
+        let owners = listeners.compactMap { Int32($0.dropFirst()).flatMap(pathForPID).flatMap(proxyOwner) }
+        guard owners.count == listeners.count, Set(owners.map(\.id)).count == 1,
+              let owner = owners.first else { return nil }
+        return Route(id: owner.id, name: owner.name, kind: .localProxy(url: url))
     }
 
     private static func proxyOwner(_ path: String) -> (id: String, name: String)? {

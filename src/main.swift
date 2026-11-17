@@ -231,11 +231,10 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         guard proxyCheck == nil,
               uptime - (lastProxyCheck ?? -.infinity) >= 5 else { return }
         lastProxyCheck = uptime
-        let codexURL = codex?.bundleURL
         let savedProxy = selectedRoute?.proxyURL
         proxyCheck = Task { [weak self] in
             let routes = await Task.detached(priority: .utility) {
-                CodexProxyStatus.routes(codex: codexURL, savedProxy: savedProxy)
+                CodexProxyStatus.routes(savedProxy: savedProxy)
             }.value
             guard !Task.isCancelled, let self else { return }
             self.proxyCheck = nil
@@ -271,9 +270,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         for route in proxyRoutes {
             let title: String
             switch route.kind {
-            case .localProxy(true, _):
-                title = "\(route.name) · Codex 已连接"
-            case .localProxy(false, _):
+            case .localProxy:
                 title = route.name
             case .systemVPN:
                 title = "\(route.name) · 系统 VPN"
@@ -365,28 +362,26 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             defaults.removeObject(forKey: "startedCodexVPN")
         }
         if let selection, selection.proxyURL != nil {
-            guard let codexURL = NSRunningApplication
-                .runningApplications(withBundleIdentifier: CodexProxyStatus.codexIdentifier).first?.bundleURL else {
+            guard !NSRunningApplication
+                .runningApplications(withBundleIdentifier: CodexProxyStatus.codexIdentifier).isEmpty else {
                 return (true, "Codex 启动后应用 · \(selection.name)")
             }
-            let proxy = await Task.detached(priority: .utility) { () -> (url: URL, inUse: Bool)? in
+            let proxy = await Task.detached(priority: .utility) { () -> URL? in
                 for attempt in 0..<3 {
-                    let routes = CodexProxyStatus.routes(codex: codexURL, savedProxy: selection.proxyURL)
+                    let routes = CodexProxyStatus.routes(savedProxy: selection.proxyURL)
                     if let route = routes.first(where: { $0.id == selection.id }),
-                       case let .localProxy(connected, url) = route.kind,
+                       case let .localProxy(url) = route.kind,
                        CodexProxyStatus.proxyIsReachable(url) {
-                        return (url, connected)
+                        return url
                     }
                     if attempt < 2 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
                 }
                 return nil
             }.value
             guard let proxy else { return (false, "\(selection.name) 暂时无法访问 Codex") }
-            let currentOverride = managedCodexProxy()
-            if !(proxy.inUse && currentOverride == nil) {
-                guard await launchCodex(using: proxy.url) else {
-                    return (false, "未能使用 \(selection.name) 启动 Codex")
-                }
+            // Desktop helpers can use the system proxy even while the model runtime connects directly.
+            guard await launchCodex(using: proxy) else {
+                return (false, "未能使用 \(selection.name) 启动 Codex")
             }
             return (true, "Codex 代理已应用 · \(selection.name)")
         }
