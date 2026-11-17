@@ -10,6 +10,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     }
 
     private var item: NSStatusItem?
+    private var menuStatus: NSMenuItem?
+    private var menuCancel: NSMenuItem?
     private var orb: FloatingOrb?
     private lazy var connectedMenuIcon = menuIcon(named: "MenuIcon")
     private lazy var disabledMenuIcon = menuIcon(named: "MenuIconDisabled")
@@ -21,12 +23,17 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private var cancellation: Cancellation?
     private var cancellationTarget: String?
     private var activeOperation: String?
+    private var workerRunning = false
+    private var progress = ""
+    private var lastInput: String?
+    private var feedback = ""
+    private var feedbackUntil: TimeInterval = 0
     private var readingStatus = false
     private var statusTimer: Timer?
     private var animationTimer: Timer?
     private var animationStarted: TimeInterval = 0
     private var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
-    private var isTransitioning: Bool { busy || pendingUntil != nil }
+    private var isTransitioning: Bool { busy || workerRunning || pendingUntil != nil }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -52,8 +59,13 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
+        let status = NSMenuItem(title: "Ashley VPN", action: nil, keyEquivalent: "")
+        menu.addItem(status)
+        menuStatus = status
+        menu.addItem(.separator())
         addItem("开启 VPN", action: #selector(connect), to: menu)
         addItem("关闭 VPN", action: #selector(disconnect), to: menu)
+        menuCancel = addItem("取消本次操作", action: #selector(cancelFromMenu), to: menu)
         menu.addItem(.separator())
         if let orb {
             addItem(orb.isVisible ? "隐藏桌面图标" : "显示桌面图标", action: #selector(toggleOrb), to: menu)
@@ -94,17 +106,28 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         return timer
     }
 
-    private func runMonitor(_ arguments: [String], completion: @escaping @MainActor (Int32, String) -> Void) {
+    private func runMonitor(_ arguments: [String], worker: Bool = false,
+                            completion: @escaping @MainActor (Int32, String) -> Void) {
         guard let runner = Bundle.main.url(forResource: "run-vpn", withExtension: "zsh") else {
             completion(-1, "")
             return
         }
         let process = Process()
         let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-f", runner.path] + arguments
+        if worker {
+            guard let executable = Bundle.main.executableURL else {
+                completion(-1, "")
+                return
+            }
+            process.executableURL = executable
+            process.arguments = ["--vpn-worker"] + arguments
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = ["-f", runner.path] + arguments
+        }
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
+        process.standardError = worker ? output : FileHandle.nullDevice
         process.terminationHandler = { child in
             let raw = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             Task { @MainActor in completion(child.terminationStatus, raw) }
@@ -122,11 +145,16 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         runMonitor(["status"]) { [weak self] code, raw in
             guard let self else { return }
             self.readingStatus = false
-            let fields = raw.split(whereSeparator: \.isWhitespace)
+            let lines = raw.components(separatedBy: "\n")
+            let fields = (lines.first ?? "").split(whereSeparator: \.isWhitespace)
             if code == 0, fields.count == 3, let next = VPNState(rawValue: String(fields[1])) {
                 self.state = next
                 self.busy = fields[0] == "busy"
                 self.activeOperation = self.busy && UUID(uuidString: String(fields[2])) != nil ? String(fields[2]) : nil
+                self.progress = self.busy && lines.count > 1 ? lines[1] : ""
+                if let token = self.activeOperation, lines.count > 2, self.cancellation == nil {
+                    self.openInput(lines[2], token: token)
+                }
             }
             if self.busy || self.uptime >= (self.pendingUntil ?? .infinity) {
                 self.pendingUntil = nil
@@ -143,14 +171,18 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 
     private func toggleFromDesktop() {
         if isTransitioning {
-            guard cancellation == nil else { return }
-            cancellation = .requested
-            cancellationTarget = activeOperation
-            updateDisplay()
-            cancelWhenReady()
+            cancelFromMenu()
         } else {
             run("toggle")
         }
+    }
+
+    @objc private func cancelFromMenu() {
+        guard isTransitioning, cancellation == nil else { return }
+        cancellation = .requested
+        cancellationTarget = activeOperation
+        updateDisplay()
+        cancelWhenReady()
     }
 
     private func cancelWhenReady() {
@@ -171,7 +203,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
                 self.cancellation = nil
                 self.cancellationTarget = nil
                 self.updateDisplay()
-                self.report("无法中止这次操作，请在它的终端窗口按 Ctrl+C。")
+                self.report("无法中止本次 VPN 操作。正在等待输入时，可以在终端按 Ctrl+C。")
             }
         }
     }
@@ -194,7 +226,9 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         if cancellation != nil {
             hint = "正在取消本次 VPN 操作"
         } else if isTransitioning {
-            hint = "正在切换集团 VPN，单击桌面图标取消"
+            hint = progress.isEmpty ? "正在切换集团 VPN" : progress
+        } else if uptime < feedbackUntil {
+            hint = feedback
         } else {
             switch state {
             case .connected: hint = "集团 VPN 已连接，单击桌面图标关闭"
@@ -205,22 +239,31 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         if let base = connected ? connectedMenuIcon : disabledMenuIcon {
             let icon = NSImage(size: base.size, flipped: false) { rect in
                 base.draw(in: rect)
-                OrbitalGlow.draw(in: rect, inset: 0, phase: phase)
+                if let phase {
+                    let brightness = 0.4 + 0.6 * (1 + cos(phase * 2 * .pi)) / 2
+                    NSColor.systemOrange.withAlphaComponent(brightness).setFill()
+                    NSBezierPath(ovalIn: NSRect(x: rect.maxX - 5, y: rect.maxY - 5, width: 5, height: 5)).fill()
+                }
                 return true
             }
             icon.accessibilityDescription = "Ashley VPN"
             item?.button?.image = icon
             item?.button?.toolTip = hint
         }
+        if menuStatus?.title != hint { menuStatus?.title = hint }
+        menuCancel?.isHidden = !isTransitioning || cancellation != nil
         if let image = connected ? connectedOrb : disabledOrb {
             orb?.update(image: image, hint: hint, phase: phase)
         }
+        orb?.showStatus(isTransitioning ? hint : (uptime < feedbackUntil ? feedback : ""))
     }
 
-    private func addItem(_ title: String, action: Selector, to menu: NSMenu) {
+    @discardableResult
+    private func addItem(_ title: String, action: Selector, to menu: NSMenu) -> NSMenuItem {
         let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
         entry.target = self
         menu.addItem(entry)
+        return entry
     }
 
     @objc private func connect() { run("connect") }
@@ -230,33 +273,60 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         guard let orb else { return }
         if orb.isVisible { orb.hide() } else { orb.show() }
         item?.menu = makeMenu()
+        drawIcons()
     }
 
     private func run(_ action: String) {
         guard !isTransitioning else { return }
-        guard let runner = Bundle.main.url(forResource: "run-vpn", withExtension: "zsh") else {
-            report("安装内容不完整，请重新运行 install.sh。")
-            return
-        }
-        let session: TerminalSession
-        do {
-            session = try TerminalSession(runner: runner, action: action)
-        } catch {
-            report("无法创建本次操作的终端会话。\(error.localizedDescription)")
-            return
-        }
+        workerRunning = true
+        lastInput = nil
         pendingUntil = uptime + 4
         updateDisplay()
+        runMonitor([action], worker: true) { [weak self] code, raw in
+            guard let self else { return }
+            self.workerRunning = false
+            self.pendingUntil = nil
+            self.progress = ""
+            if code == 0 {
+                self.feedback = raw.contains("VPN 已连接") ? "集团 VPN 已连接" : "集团 VPN 已关闭"
+            } else if code == 130 {
+                self.feedback = "已取消本次操作"
+            } else {
+                self.feedback = raw.split(whereSeparator: \.isNewline).last.map(String.init) ?? "VPN 操作未完成"
+            }
+            self.feedbackUntil = self.uptime + 5
+            self.updateDisplay()
+            self.refreshStatus()
+        }
+    }
+
+    private func openInput(_ request: String, token: String) {
+        let parts = request.split(separator: " ").map(String.init)
+        guard parts.count == 2,
+              ["connect-wifi", "connect-wifi-reset", "disconnect-wifi", "stop-system", "start-system"].contains(parts[0]),
+              parts[1].hasPrefix("input.\(token)."),
+              parts[1].range(of: #"^input\.[a-fA-F0-9-]+\.[a-zA-Z0-9]+$"#, options: .regularExpression) != nil,
+              lastInput != parts[1],
+              let runner = Bundle.main.url(forResource: "run-vpn", withExtension: "zsh") else { return }
+        let result = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Ashley VPN")
+            .appendingPathComponent(parts[1]).appendingPathComponent("result")
+        lastInput = parts[1]
+        let session: TerminalSession
+        do {
+            session = try TerminalSession(runner: runner, arguments: ["input"] + parts)
+        } catch {
+            try? "1\n".write(to: result, atomically: true, encoding: .utf8)
+            report("无法创建输入终端。\(error.localizedDescription)")
+            return
+        }
         let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
         NSWorkspace.shared.open([session.profile], withApplicationAt: terminal, configuration: .init()) { _, error in
-            Task { @MainActor in
-                if let error {
-                    try? FileManager.default.removeItem(at: session.directory)
-                    self.pendingUntil = nil
-                    self.updateDisplay()
+            if let error {
+                try? FileManager.default.removeItem(at: session.directory)
+                try? "1\n".write(to: result, atomically: true, encoding: .utf8)
+                Task { @MainActor in
                     self.report("无法打开终端。\(error.localizedDescription)")
-                } else {
-                    self.refreshStatus()
                 }
             }
         }
@@ -275,12 +345,24 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 struct Main {
     @MainActor
     static func main() {
-        let application = NSApplication.shared
         let arguments = CommandLine.arguments
+        if arguments.count == 3, arguments[1] == "--vpn-worker" {
+            guard let runner = Bundle.main.url(forResource: "run-vpn", withExtension: "zsh"),
+                  getpgrp() == getpid() || setpgid(0, 0) == 0 else { exit(1) }
+            setenv("ASHLEY_VPN_BACKGROUND", "1", 1)
+            let command = ["/bin/zsh", "-f", runner.path, arguments[2]]
+            var argv = command.map { strdup($0) } + [nil]
+            argv.withUnsafeMutableBufferPointer { arguments in
+                guard let base = arguments.baseAddress else { return }
+                _ = execv(command[0], base)
+            }
+            exit(1)
+        }
         if arguments.count == 4, arguments[1] == "--scan-wifi" {
             WiFiScan.run(interfaceName: arguments[2], outputPath: arguments[3])
             return
         }
+        let application = NSApplication.shared
         let delegate = AshleyVPN()
         application.setActivationPolicy(.accessory)
         application.delegate = delegate
