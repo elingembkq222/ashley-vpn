@@ -397,6 +397,29 @@ _gp-wifi-read-key() {
   done
 }
 
+_gp-wifi-row() {
+  local width="$1" framed="$2" text
+  shift 2
+  if [[ "$framed" == true ]]; then
+    _gp-terminal-text brand '  │'
+    printf ' '
+  else
+    printf '  '
+  fi
+  while (( $# >= 2 && width > 0 )); do
+    text="$2"
+    (( ${(m)#text} <= width )) || text=$(_gp-terminal-fit "$text" "$width")
+    _gp-terminal-text "$1" "$text"
+    (( width -= ${(m)#text} ))
+    shift 2
+  done
+  if [[ "$framed" == true ]]; then
+    printf '%*s' "$((width + 1))" ''
+    _gp-terminal-text brand '│'
+  fi
+  printf '\n'
+}
+
 _gp-wifi-picker() {
   emulate -L zsh
   local gpCurrent="$1" gpKeep="$2" gpFallback="$3" gpMode="$4"
@@ -406,6 +429,8 @@ _gp-wifi-picker() {
   local gpIndex gpSelected=1 gpFirst=1 gpLast gpLimit gpTerminal gpInterrupted=false
   local gpViewport
   local gpRows gpColumns gpWidth gpLabelWidth gpMarker gpTone gpBadge gpFooter gpRule=''
+  local gpFramed gpTitle gpTopWidth gpBottomWidth gpAction='选择 Wi-Fi'
+  [[ "$gpMode" != disconnect ]] || gpAction='切换 Wi-Fi'
 
   # Draw on the alternate screen so ending the picker restores the operation log.
   gpTerminal=$(/bin/stty -g) || return 1
@@ -433,7 +458,14 @@ _gp-wifi-picker() {
       (( gpSelected = gpSelected < 1 ? 1 : gpSelected ))
       gpViewport=$(/bin/stty size)
       read -r gpRows gpColumns <<< "$gpViewport"
-      (( gpWidth = gpColumns == 0 ? 66 : gpColumns > 12 ? gpColumns - 4 : 8 ))
+      (( gpColumns != 0 )) || gpColumns=76
+      gpFramed=false
+      if (( gpColumns >= 42 && (gpRows == 0 || gpRows >= 9) )); then
+        gpFramed=true
+        (( gpWidth = gpColumns - 8 ))
+      else
+        (( gpWidth = gpColumns > 12 ? gpColumns - 4 : 8 ))
+      fi
       (( gpWidth = gpWidth > 66 ? 66 : gpWidth ))
       (( gpLimit = gpRows > 0 ? gpRows - 7 : 10 ))
       (( gpLimit = gpLimit < 1 ? 1 : gpLimit > 10 ? 10 : gpLimit ))
@@ -443,49 +475,47 @@ _gp-wifi-picker() {
 
       {
         printf '\e[H\e[J'
-        if [[ "$gpMode" == disconnect ]]; then
-          _gp-terminal-title '切换 Wi-Fi'
+        if [[ "$gpFramed" == true ]]; then
+          gpTitle="╭── ✻ Ashley VPN · $gpAction "
+          gpTopWidth=$((gpWidth + 3 - ${(m)#gpTitle}))
+          _gp-terminal-text brand "  $gpTitle${(l:$gpTopWidth::─:)gpRule}╮"
+          printf '\n'
         else
-          _gp-terminal-title '选择 Wi-Fi'
+          gpTitle="✻ Ashley VPN · $gpAction"
+          if (( ${(m)#gpTitle} <= gpWidth )); then
+            _gp-wifi-row "$gpWidth" false brand '✻ Ashley VPN' muted ' · ' heading "$gpAction"
+          else
+            _gp-wifi-row "$gpWidth" false brand '✻ Ashley VPN'
+          fi
         fi
         if [[ "$gpSearch" == true ]]; then
-          _gp-terminal-text heading '  搜索  '
-          printf '%s▏\n' "$(_gp-terminal-fit "$gpQuery" $((gpWidth - 7)))"
+          _gp-wifi-row "$gpWidth" "$gpFramed" heading '搜索  ' normal "$gpQuery▏"
         elif [[ -n "$gpQuery" ]]; then
-          _gp-terminal-text muted '  筛选  '
-          printf '%s\n' "$(_gp-terminal-fit "$gpQuery" $((gpWidth - 7)))"
+          _gp-wifi-row "$gpWidth" "$gpFramed" muted '筛选  ' normal "$gpQuery"
         elif [[ "$gpFallback" == true ]]; then
-          _gp-terminal-text muted '  已保存的网络'
-          printf '\n'
+          _gp-wifi-row "$gpWidth" "$gpFramed" muted '已保存的网络'
         fi
-        _gp-terminal-text muted "  ${(l:$gpWidth::─:)gpRule}"
-        printf '\n'
         if (( gpLast < gpFirst )); then
-          _gp-terminal-text muted '  找不到匹配的网络'
-          printf '\n'
+          _gp-wifi-row "$gpWidth" "$gpFramed" muted '找不到匹配的网络'
         fi
         for (( gpIndex = gpFirst; gpIndex <= gpLast; gpIndex++ )); do
           gpLabel=$gpVisible[gpIndex]
           gpMarker=' ' gpTone=normal gpBadge=''
           (( gpIndex > gpCount )) && gpTone=muted
-          if (( gpIndex <= gpCount )) && [[ "$gpLabel" == "$gpCurrent" ]]; then
+          if (( gpIndex <= gpCount && gpWidth >= 18 )) && [[ "$gpLabel" == "$gpCurrent" ]]; then
             gpBadge='  ● 当前'
           fi
           if (( gpIndex == gpSelected )); then
             gpMarker='❯' gpTone=heading
           fi
           gpLabelWidth=$((gpWidth - 2 - ${(m)#gpBadge}))
-          _gp-terminal-text brand "  $gpMarker "
-          _gp-terminal-text "$gpTone" "$(_gp-terminal-fit "$gpLabel" "$gpLabelWidth")"
-          [[ -z "$gpBadge" ]] || _gp-terminal-text success "$gpBadge"
-          printf '\n'
+          (( ${(m)#gpLabel} <= gpLabelWidth )) || gpLabel=$(_gp-terminal-fit "$gpLabel" "$gpLabelWidth")
+          _gp-wifi-row "$gpWidth" "$gpFramed" brand "$gpMarker " "$gpTone" "$gpLabel" success "$gpBadge"
         done
         if (( ${#gpVisible} > gpLimit )); then
-          _gp-terminal-text muted "  $gpFirst–$gpLast / ${#gpVisible}"
-          printf '\n'
+          _gp-wifi-row "$gpWidth" "$gpFramed" muted "$gpFirst–$gpLast / ${#gpVisible}"
         fi
-        _gp-terminal-text muted "  ${(l:$gpWidth::─:)gpRule}"
-        printf '\n'
+        _gp-wifi-row "$gpWidth" "$gpFramed" muted "${(l:$gpWidth::─:)gpRule}"
         if [[ "$gpSearch" == true || -n "$gpQuery" ]]; then
           gpFooter='↑↓ 选择  ↵ 确认  Esc 清除'
         else
@@ -493,8 +523,12 @@ _gp-wifi-picker() {
           (( ${(m)#gpFooter} <= gpWidth )) || gpFooter='↑↓  ↵  Tab 搜索  Esc 取消'
         fi
         (( ${(m)#gpFooter} <= gpWidth )) || gpFooter='↑↓ ↵ Tab Esc'
-        _gp-terminal-text muted "  $(_gp-terminal-fit "$gpFooter" "$gpWidth")"
-        printf '\n'
+        _gp-wifi-row "$gpWidth" "$gpFramed" muted "$gpFooter"
+        if [[ "$gpFramed" == true ]]; then
+          gpBottomWidth=$((gpWidth + 2))
+          _gp-terminal-text brand "  ╰${(l:$gpBottomWidth::─:)gpRule}╯"
+          printf '\n'
+        fi
       } >&2
 
       until _gp-wifi-read-key; do
