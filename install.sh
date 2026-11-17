@@ -7,10 +7,10 @@ source "$root/src/check-globalprotect.sh"
 target='/Applications/Ashley VPN.app'
 domain='com.ashley.vpn.companion'
 
-# Ashley orange sampled from the sign-in screen, with an indexed-color fallback.
+# Claude Code's terracotta accent, with an indexed-color fallback.
 case "${COLORTERM:-}:${TERM:-}" in
-  truecolor:*|24bit:*) install_accent='1;38;2;236;153;76' ;;
-  *:*256color*) install_accent='1;38;5;208' ;;
+  truecolor:*|24bit:*) install_accent='1;38;2;215;119;87' ;;
+  *:*256color*) install_accent='1;38;5;173' ;;
   *) install_accent='1;33' ;;
 esac
 
@@ -24,9 +24,9 @@ install_paint() {
 
 install_section() {
   printf '\n  '
+  install_paint '2' '──'
+  printf ' '
   install_paint "$install_accent" "$1"
-  printf '  '
-  install_paint '2' '────────────────────────'
   printf '\n'
 }
 
@@ -65,7 +65,7 @@ install_wait() {
   trap 'stop_install_animation; exit 143' TERM
   (
     local frame
-    local -a frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+    local -a frames=(◐ ◓ ◑ ◒)
     trap 'exit 0' TERM
     /bin/sleep 0.12
     while true; do
@@ -239,8 +239,9 @@ check_application_directory() {
 }
 
 printf '\n'
-install_paint "$install_accent" '  ▍ Ashley VPN'
-printf '  安装程序\n'
+install_paint "$install_accent" '  ✻ Ashley VPN'
+install_paint '2' '  ·  安装程序'
+printf '\n'
 install_section '安装检查'
 if [[ "$(/usr/bin/uname -s)" != Darwin ]]; then
   fail_check '操作系统：Ashley VPN 需要 macOS 12 或更新版本。'
