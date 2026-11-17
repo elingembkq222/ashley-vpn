@@ -9,6 +9,7 @@ operation_owner="$ASHLEY_VPN_STATE/operation.owner"
 operation_progress="$ASHLEY_VPN_STATE/operation.progress"
 operation_input="$ASHLEY_VPN_STATE/operation.input"
 ASHLEY_VPN_INPUT='' ASHLEY_VPN_INPUT_MODE=''
+source "$ASHLEY_VPN_RESOURCES/terminal-banner.zsh" || exit 1
 source "$ASHLEY_VPN_RESOURCES/globalprotect-control.zsh" || exit 1
 
 vpn_state() {
@@ -42,6 +43,16 @@ connect_vpn() {
 
 process_start() {
   LC_ALL=C /bin/ps -p "$1" -o lstart= | /usr/bin/awk '{$1=$1; if (NF) print}'
+}
+
+prepare_terminal_banner() {
+  [[ -t 2 ]] || return 0
+  local fields
+  fields=$(ashley_release_fields "${ASHLEY_VPN_RESOURCES:h}/Info.plist") || fields=''
+  read -r ashley_running_version ashley_running_build <<< "$fields"
+  if ! ashley_fresh_release "$ASHLEY_VPN_STATE" >/dev/null; then
+    ashley_refresh_latest_release "$ASHLEY_VPN_STATE" </dev/null >/dev/null 2>&1 &!
+  fi
 }
 
 _gp-gui-progress() {
@@ -122,6 +133,7 @@ _gp-run-input() {
   /bin/kill -0 "$owner_pid" 2>/dev/null && [[ -f "$input_path/request" ]] || exit 2
   ASHLEY_VPN_BACKGROUND=1
   [[ "${TERM:-dumb}" == dumb ]] || printf '\033[H\033[2J' >&2
+  prepare_terminal_banner
   case "$mode" in
     connect-wifi|connect-wifi-reset)
       _gp-terminal-title '连接集团 VPN'
@@ -204,6 +216,14 @@ case "$1" in
   toggle|connect|disconnect) ;;
   *) print -u2 -- '未知的 Ashley VPN 操作。'; exit 2 ;;
 esac
+if [[ -t 2 ]]; then
+  prepare_terminal_banner
+  case "$1" in
+    connect) _gp-terminal-title '连接集团 VPN' ;;
+    disconnect) _gp-terminal-title '关闭集团 VPN' ;;
+    toggle) _gp-terminal-title '切换集团 VPN' ;;
+  esac
+fi
 source "$ASHLEY_VPN_RESOURCES/check-globalprotect.sh"
 check_globalprotect || exit 1
 if ! zsystem flock -t 0 -f operation_fd "$ASHLEY_VPN_STATE/operation.lock"; then

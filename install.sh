@@ -4,39 +4,18 @@ umask 022
 
 root=${0:A:h}
 source "$root/src/check-globalprotect.sh"
+source "$root/src/terminal-banner.zsh"
 target='/Applications/Ashley VPN.app'
 domain='com.ashley.vpn.companion'
 
-# Claude Code's terracotta accent, with an indexed-color fallback.
-case "${COLORTERM:-}:${TERM:-}" in
-  truecolor:*|24bit:*) install_accent='1;38;2;215;119;87' ;;
-  *:*256color*) install_accent='1;38;5;173' ;;
-  *) install_accent='1;33' ;;
-esac
-
-install_paint() {
-  if [[ -t 1 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then
-    printf '\033[%sm%s\033[0m' "$1" "$2"
-  else
-    printf '%s' "$2"
-  fi
-}
-
-install_panel_cell() {
-  local label="$1" width="$2" style="$3"
-  if (( ${(m)#label} > width )); then
-    local limit=$((width - 1))
-    label="${(mr:$limit:)label}…"
-  fi
-  install_paint "$style" "$label"
-  printf '%*s' "$((width - ${(m)#label}))" ''
-}
+install_accent=$(ashley_terminal_accent)
+install_state="$HOME/Library/Application Support/Ashley VPN"
 
 install_welcome_panel() {
-  local release="$1" title='Ashley VPN'
-  [[ -z "$release" ]] || title+=" v$release"
   local primary='安装 Ashley VPN' details='检查安装条件和集团 VPN 证书权限'
   local next_title='启动应用' next_step='在新终端运行 ashleyvpn'
+  local columns=0
+  if [[ -t 1 && "${TERM:-dumb}" != dumb ]]; then columns=$(ashley_terminal_columns); fi
   case "$mode" in
     --check)
       primary='检查安装条件' details='macOS、GlobalProtect 和 Swift 工具链'
@@ -48,61 +27,14 @@ install_welcome_panel() {
       ;;
   esac
 
-  local rows columns=0 width rule='' top left_width=20 right_width index
-  if [[ -t 1 && "${TERM:-dumb}" != dumb ]]; then
-    read -r rows columns <<< "$(/bin/stty -f /dev/tty size 2>/dev/null || printf '0 %s' "${COLUMNS:-80}")"
-  fi
-  if [[ "$columns" != <-> ]] || (( columns < 36 )); then
-    printf '\n  '
-    install_paint "$install_accent" "✻ $title"
-    printf '  ·  %s\n' "$primary"
-    return
-  fi
-
-  (( width = columns > 100 ? 96 : columns - 4 ))
-  top="╭── $title "
-  local top_rule=$((width - ${(m)#top} - 1))
-  local bottom_rule=$((width - 2))
-  printf '\n'
-  install_paint "$install_accent" "  $top${(l:$top_rule::─:)rule}╮"
-  printf '\n'
-
-  local -a art=(
-    '        ▄  ▄'
-    '      ▄ █  █ ▄'
-    '      █  ▄▄  █'
-    '        ████'
-    '        ▀▀▀▀'
-  )
-  local -a content=("  $primary" "  $details" '' "  $next_title" "  $next_step")
-  local -a styles=("$install_accent" '0' '2' "$install_accent" '0')
-  if (( width >= 64 )); then
-    right_width=$((width - left_width - 3))
-  else
-    right_width=$bottom_rule
-  fi
-  local divider=$((right_width - 4))
-  content[3]="  ${(l:$divider::─:)rule}"
-
-  for (( index = 1; index <= ${#content}; index++ )); do
-    install_paint "$install_accent" '  │'
-    if (( width >= 64 )); then
-      install_panel_cell "$art[index]" "$left_width" "$install_accent"
-      install_paint "$install_accent" '│'
-    fi
-    install_panel_cell "$content[index]" "$right_width" "$styles[index]"
-    install_paint "$install_accent" '│'
-    printf '\n'
-  done
-  install_paint "$install_accent" "  ╰${(l:$bottom_rule::─:)rule}╯"
-  printf '\n'
+  ashley_welcome_panel "$1" "$2" "$columns" "$primary" "$details" "$next_title" "$next_step"
 }
 
 install_section() {
   printf '\n  '
-  install_paint '2' '──'
+  ashley_banner_paint '2' '──'
   printf ' '
-  install_paint "$install_accent" "$1"
+  ashley_banner_paint "$install_accent" "$1"
   printf '\n'
 }
 
@@ -115,7 +47,7 @@ install_message() {
     *) color="$install_accent" icon='›' ;;
   esac
   printf '  '
-  install_paint "$color" "$icon"
+  ashley_banner_paint "$color" "$icon"
   printf '  %s\n' "$2"
 }
 
@@ -317,8 +249,14 @@ check_application_directory() {
 if [[ "$(/usr/bin/uname -s)" != Darwin ]]; then
   fail_check '操作系统：Ashley VPN 需要 macOS 12 或更新版本。'
 fi
-latest_version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$root/src/Info.plist" 2>/dev/null) || latest_version=''
-install_welcome_panel "$latest_version"
+release_fields=$(ashley_release_fields "$root/src/Info.plist") || release_fields=''
+read -r latest_version latest_build <<< "$release_fields"
+if [[ "${ASHLEY_VPN_ONLINE_INSTALL:-}" == 1 && -n "$release_fields" ]]; then
+  version_status='已是最新版'
+else
+  version_status=$(ashley_release_status "$latest_version" "$latest_build" "$install_state")
+fi
+install_welcome_panel "$latest_version" "$version_status"
 install_section '安装检查'
 version=$(/usr/bin/sw_vers -productVersion) || fail_check '操作系统：无法读取 macOS 版本。'
 major=${version%%.*}
@@ -329,8 +267,6 @@ install_message done "macOS $version"
 
 if [[ -z "${1:-}" ]]; then
   [[ -n "$latest_version" ]] || fail_check '无法读取安装包版本。'
-  latest_build=$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$root/src/Info.plist") ||
-    fail_check '无法读取安装包构建号。'
 fi
 if [[ -z "$mode" || "$mode" == --check ]]; then
   check_existing_installation "$mode"
@@ -352,7 +288,7 @@ if [[ "${1:-}" == --check ]]; then
   exit 0
 fi
 
-state="$HOME/Library/Application Support/Ashley VPN"
+state="$install_state"
 if [[ -L "$state" || -L "$state/operation.lock" ]]; then
   fail_check 'Ashley VPN 数据位置指向其他路径。'
 fi
@@ -362,10 +298,17 @@ if ! zsystem flock -t 0 -f install_fd "$state/operation.lock" 2>/dev/null; then
   install_message warn 'Ashley VPN 正在连接或关闭，请等当前操作结束后重试安装。' >&2
   exit 1
 fi
+if [[ "${ASHLEY_VPN_ONLINE_INSTALL:-}" == 1 && -n "$release_fields" ]]; then
+  ashley_record_latest_release "$state" "$release_fields" 2>/dev/null || true
+fi
 if [[ -z "$mode" ]]; then
   check_existing_installation
   if [[ "$installed_current" == true ]]; then
-    install_message done "Ashley VPN $latest_version 已是最新版"
+    if [[ "$version_status" == '已是最新版' ]]; then
+      install_message done "Ashley VPN $latest_version 已是最新版"
+    else
+      install_message done "Ashley VPN $latest_version 已安装"
+    fi
   fi
 fi
 if [[ -n "$mode" || "$installed_current" == true ]]; then
@@ -398,7 +341,7 @@ app="$stage/Ashley VPN.app"
 resources="$app/Contents/Resources"
 /bin/mkdir -p "$resources" "$app/Contents/MacOS"
 /bin/cp "$root/src/Info.plist" "$app/Contents/Info.plist"
-/bin/cp "$root/src/"{connect.command,disconnect.command,toggle.command,run-vpn.zsh,check-globalprotect.sh,globalprotect-control.zsh,setup-stop-authorization.sh} "$resources/"
+/bin/cp "$root/src/"{connect.command,disconnect.command,toggle.command,run-vpn.zsh,check-globalprotect.sh,globalprotect-control.zsh,setup-stop-authorization.sh,terminal-banner.zsh} "$resources/"
 /bin/cp "$root/src/assets/"{AppIcon.icns,MenuIcon.png,MenuIcon@2x.png,MenuIconDisabled.png,MenuIconDisabled@2x.png,FloatingIcon.png,FloatingIconDisabled.png} "$resources/"
 /bin/chmod 755 "$resources/"{connect,disconnect,toggle}.command
 /usr/bin/uuidgen > "$resources/installation-id"
