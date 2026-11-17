@@ -173,6 +173,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     }
 
     private func refreshStatus() {
+        refreshCodexProxy()
         guard !readingStatus else { return }
         readingStatus = true
         runMonitor(["status"]) { [weak self] code, raw in
@@ -211,7 +212,6 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             }
             self.updateDisplay()
             self.cancelWhenReady()
-            self.refreshCodexProxy()
             self.finishGroupDisconnect()
         }
     }
@@ -261,8 +261,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             switch route.kind {
             case .localProxy:
                 title = route.name
-            case .systemVPN:
-                title = "\(route.name) · 系统 VPN"
+            case .systemVPN(let available):
+                title = "\(route.name) · \(available ? "系统 VPN" : "当前不可用")"
             }
             let item = addItem(title, action: #selector(selectCodexProxy(_:)), to: menu)
             item.representedObject = route.id
@@ -270,6 +270,9 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             item.state = route.id == selectedRoute?.id ? .on : .off
             if case .localProxy = route.kind {
                 item.toolTip = "本机代理须设为 macOS 系统代理"
+            } else if case .systemVPN(false) = route.kind {
+                item.isEnabled = false
+                item.toolTip = "请在当前网络位置启用此 VPN"
             }
         }
         if let selectedRoute, !proxyRoutes.contains(where: { $0.id == selectedRoute.id }) {
@@ -340,6 +343,10 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 
     private func applyCodexRoute(_ selection: CodexProxyStatus.Selection?) async -> (success: Bool, message: String) {
         let desiredVPN = selection?.proxyURL == nil ? selection?.id : nil
+        if let desiredVPN,
+           let route = proxyRoutes.first(where: { $0.id == desiredVPN }), case .systemVPN(false) = route.kind {
+            return (false, "请在当前网络位置启用 \(route.name)")
+        }
         if let started = defaults.string(forKey: "startedCodexVPN"), started != desiredVPN {
             let released = await Task.detached(priority: .utility) {
                 let status = CodexProxyStatus.vpnStatus(started)
