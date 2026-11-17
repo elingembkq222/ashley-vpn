@@ -832,21 +832,29 @@ _gp-wifi-progress() {
 _gp-read-wifi-password() {
   emulate -L zsh
   unsetopt xtrace
-  local gpTerminal gpKey gpPrefix gpSequence gpPart gpByte gpPrompt
+  local gpTerminal gpKey gpPrefix gpSequence gpPart gpByte gpPrompt gpWarningPrompt gpRenderedPrompt gpLabel gpColumns
+  local gpNormalPrompt='  Wi-Fi 密码：' gpPasteWarning='  Wi-Fi 密码（请粘贴单行）：'
+  local gpMask='' gpMaskLength gpMaskLimit gpFeedback
   local gpPasting=false gpPasteValid=true gpPasted='' gpInterrupted=false gpAccepted=false
   local gpHasPassword=false
   gpTerminal=$(/bin/stty -g) || return 130
   printf '\n' >&2
-  _gp-terminal-message muted '·' '直接输入或 ⌘V 粘贴，回车确认，Esc 取消。密码不回显。'
+  _gp-terminal-message muted '·' '直接输入或 ⌘V 粘贴，回车确认，Esc 取消。密码显示为星号。'
   printf '\n' >&2
-  gpPrompt=$(_gp-terminal-text heading '  Wi-Fi 密码：')
+  gpColumns=$(ashley_terminal_columns)
+  if (( gpColumns > 0 && ${(m)#gpPasteWarning} >= gpColumns )); then
+    gpPasteWarning='  仅单行：'
+  fi
+  gpPrompt=$(_gp-terminal-text heading "$gpNormalPrompt")
+  gpWarningPrompt=$(_gp-terminal-text warning "$gpPasteWarning")
   {
     trap 'gpInterrupted=true' INT
     /bin/stty -echo -icanon min 1 time 0 || return 130
-    # A bracketed paste keeps clipboard newlines from acting as the Enter key.
+    # Clipboard line endings stay inside the paste, so only a separate Enter submits.
     printf '\033[?25h\033[?2004h%s' "$gpPrompt" >&2
     while [[ "$gpInterrupted" == false ]]; do
       IFS= read -rk 1 -t 0.25 -u 0 gpKey || continue
+      gpLabel="$gpNormalPrompt" gpFeedback=''
       if [[ "$gpKey" == $'\e' ]]; then
         IFS= read -rk 1 -t 0.12 -u 0 gpPrefix || return 130
         [[ "$gpPrefix" == '[' || "$gpPrefix" == O ]] || return 130
@@ -858,54 +866,58 @@ _gp-read-wifi-password() {
         done
         if [[ "$gpPasting" == false && "$gpSequence" == '[200~' ]]; then
           gpPasting=true gpPasteValid=true gpPasted=''
+          continue
         elif [[ "$gpPasting" == true && "$gpSequence" == '[201~' ]]; then
           gpPasting=false
-          if [[ "$gpPasteValid" == true ]]; then
+          # Copying a whole line often includes its final LF or CRLF.
+          while [[ "$gpPasted" == *[$'\r\n'] ]]; do gpPasted=${gpPasted[1,-2]}; done
+          if [[ "$gpPasteValid" == false || "$gpPasted" == *[[:cntrl:]]* ]]; then
+            gpLabel="$gpPasteWarning"
+            gpFeedback='请粘贴单行 Wi-Fi 密码'
+          elif [[ -n "$gpPasted" ]]; then
             gpPassword+="$gpPasted"
-            if [[ "$ASHLEY_VPN_BACKGROUND" == 1 && -n "$gpPasted" ]]; then
-              _gp-gui-progress '已粘贴 Wi-Fi 密码，按回车确认'
-              gpHasPassword=true
-            fi
-          else
-            gpPassword=''
-            gpHasPassword=false
-            [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '请在终端输入 Wi-Fi 密码'
-            printf '\n' >&2
-            _gp-terminal-message warning '!' '请只粘贴一行密码。'
-            printf '%s' "$gpPrompt" >&2
+            gpFeedback='已粘贴 Wi-Fi 密码，按回车确认'
           fi
           gpPasted=''
-        elif [[ "$gpPasting" == true ]]; then
-          gpPasteValid=false
-        fi
-        continue
-      fi
-      if [[ "$gpPasting" == true ]]; then
-        if [[ "$gpKey" == [[:cntrl:]] ]]; then
-          gpPasteValid=false
         else
-          gpPasted+="$gpKey"
+          [[ "$gpPasting" != true ]] || gpPasteValid=false
+          continue
         fi
+      elif [[ "$gpPasting" == true ]]; then
+        gpPasted+="$gpKey"
         continue
+      else
+        case "$gpKey" in
+          $'\r'|$'\n')
+            [[ -n "$gpPassword" ]] || return 130
+            gpAccepted=true
+            return 0
+            ;;
+          $'\177'|$'\b') [[ -z "$gpPassword" ]] || gpPassword=${gpPassword[1,-2]} ;;
+          $'\025') gpPassword='' ;;
+          [[:print:]]) gpPassword+="$gpKey" ;;
+          *) continue ;;
+        esac
       fi
-      case "$gpKey" in
-        $'\r'|$'\n')
-          [[ -n "$gpPassword" ]] || return 130
-          gpAccepted=true
-          return 0
-          ;;
-        $'\177'|$'\b') [[ -z "$gpPassword" ]] || gpPassword=${gpPassword[1,-2]} ;;
-        $'\025') gpPassword='' ;;
-        [[:print:]]) gpPassword+="$gpKey" ;;
-      esac
+      gpMaskLength=${#gpPassword}
+      if (( gpColumns > 0 )); then
+        gpMaskLimit=$((gpColumns - 1 - ${(m)#gpLabel}))
+        (( gpMaskLength <= gpMaskLimit )) || gpMaskLength=$gpMaskLimit
+      fi
+      (( gpMaskLength >= 0 )) || gpMaskLength=0
+      gpRenderedPrompt="$gpPrompt"
+      [[ "$gpLabel" != "$gpPasteWarning" ]] || gpRenderedPrompt="$gpWarningPrompt"
+      printf '\r\033[2K%s%s' "$gpRenderedPrompt" "${(l:$gpMaskLength::*:)gpMask}" >&2
       if [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]]; then
-        if [[ -n "$gpPassword" && "$gpHasPassword" == false ]]; then
-          _gp-gui-progress '已输入 Wi-Fi 密码，按回车确认'
-          gpHasPassword=true
-        elif [[ -z "$gpPassword" && "$gpHasPassword" == true ]]; then
-          _gp-gui-progress '请在终端输入 Wi-Fi 密码'
-          gpHasPassword=false
+        if [[ -z "$gpFeedback" ]]; then
+          if [[ -n "$gpPassword" && "$gpHasPassword" == false ]]; then
+            gpFeedback='已输入 Wi-Fi 密码，按回车确认'
+          elif [[ -z "$gpPassword" && "$gpHasPassword" == true ]]; then
+            gpFeedback='请在终端输入 Wi-Fi 密码'
+          fi
         fi
+        [[ -z "$gpFeedback" ]] || _gp-gui-progress "$gpFeedback"
+        if [[ -n "$gpPassword" ]]; then gpHasPassword=true; else gpHasPassword=false; fi
       fi
     done
     return 130
