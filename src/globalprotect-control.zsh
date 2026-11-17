@@ -299,10 +299,14 @@ _gp-terminal-title() {
   } >&2
 }
 
-_gp-terminal-input-heading() {
-  [[ "${ASHLEY_VPN_TERMINAL_PROFILE:-}" == 1 ]] || return 0
-  [[ "${TERM:-dumb}" == dumb ]] || printf '\033[H\033[2J' >&2
-  _gp-terminal-title "$1"
+_gp-wifi-selection-note() {
+  local label='正在确认当前 Wi-Fi'
+  [[ -z "$1" ]] || label="已选择 $1，正在检查 Wi-Fi"
+  [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress "$label"
+  if [[ -t 2 ]]; then
+    printf '\n' >&2
+    _gp-terminal-message brand '›' "$label…"
+  fi
 }
 
 _gp-terminal-fit() {
@@ -734,6 +738,7 @@ _gp-disconnect-wifi() {
     print -r -- 'VPN 已关闭，保留当前网络设置。'
   else
     _gp-terminal-title '切换 Wi-Fi'
+    _gp-wifi-selection-note "$REPLY"
     wifi-switch "$REPLY" || gpSwitchStatus=$?
     (( gpSwitchStatus == 130 )) && return 130
     if (( gpSwitchStatus != 0 )); then
@@ -824,6 +829,7 @@ _gp-read-wifi-password() {
   unsetopt xtrace
   local gpTerminal gpKey gpPrefix gpSequence gpPart gpByte gpPrompt
   local gpPasting=false gpPasteValid=true gpPasted='' gpInterrupted=false gpAccepted=false
+  local gpHasPassword=false
   gpTerminal=$(/bin/stty -g) || return 130
   printf '\n' >&2
   _gp-terminal-message muted '·' '直接输入或 ⌘V 粘贴，回车确认，Esc 取消。密码不回显。'
@@ -851,8 +857,14 @@ _gp-read-wifi-password() {
           gpPasting=false
           if [[ "$gpPasteValid" == true ]]; then
             gpPassword+="$gpPasted"
+            if [[ "$ASHLEY_VPN_BACKGROUND" == 1 && -n "$gpPasted" ]]; then
+              _gp-gui-progress '已粘贴 Wi-Fi 密码，按回车确认'
+              gpHasPassword=true
+            fi
           else
             gpPassword=''
+            gpHasPassword=false
+            [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '请在终端输入 Wi-Fi 密码'
             printf '\n' >&2
             _gp-terminal-message warning '!' '请只粘贴一行密码。'
             printf '%s' "$gpPrompt" >&2
@@ -881,6 +893,15 @@ _gp-read-wifi-password() {
         $'\025') gpPassword='' ;;
         [[:print:]]) gpPassword+="$gpKey" ;;
       esac
+      if [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]]; then
+        if [[ -n "$gpPassword" && "$gpHasPassword" == false ]]; then
+          _gp-gui-progress '已输入 Wi-Fi 密码，按回车确认'
+          gpHasPassword=true
+        elif [[ -z "$gpPassword" && "$gpHasPassword" == true ]]; then
+          _gp-gui-progress '请在终端输入 Wi-Fi 密码'
+          gpHasPassword=false
+        fi
+      fi
     done
     return 130
   } always {
@@ -928,9 +949,9 @@ wifi-switch() {
     print -u2 -- "$gpSsid 需要 Wi-Fi 密码。请在终端运行 wifi-switch $gpSsid，连接成功后会记住密码。"
     return 1
   fi
-  _gp-terminal-input-heading '输入 Wi-Fi 密码'
   printf '\n' >&2
-  _gp-terminal-message brand '›' "Wi-Fi  $gpSsid"
+  _gp-terminal-text heading '  输入 Wi-Fi 密码' >&2
+  printf '\n' >&2
   while true; do
     gpPassword=''
     [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '请在终端输入 Wi-Fi 密码'
@@ -938,7 +959,7 @@ wifi-switch() {
     _gp-read-wifi-password || gpInputStatus=$?
     (( gpInputStatus == 0 )) || return "$gpInputStatus"
     gpStatus=0
-    print -r -- "$gpPassword" | _gp-progress-run "正在验证 Wi-Fi 密码并加入 $gpSsid" _gp-wifi-join "$gpSsid" - || gpStatus=$?
+    print -r -- "$gpPassword" | _gp-progress-run "已提交 Wi-Fi 密码，正在验证 $gpSsid" _gp-wifi-join "$gpSsid" - || gpStatus=$?
     (( gpStatus == 0 )) && break
     case "$gpStatus" in
       2) _gp-terminal-message error '✕' 'Wi-Fi 密码验证失败，请重新输入。' ;;
@@ -1108,6 +1129,7 @@ _gp-connect-wifi() {
   _gp-select-wifi connect || return 130
   gpSsid="$REPLY"
   _gp-terminal-title '连接集团 VPN'
+  _gp-wifi-selection-note "$gpSsid"
   _gp-reset-first-connection "${1:-}" || return
   if [[ -n "$gpSsid" ]]; then
     wifi-switch "$gpSsid"

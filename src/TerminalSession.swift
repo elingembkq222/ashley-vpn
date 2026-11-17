@@ -49,12 +49,37 @@ struct TerminalSession {
             ]
             let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             settings.merge(try Self.appearanceSettings(dark: dark)) { _, themed in themed }
+            settings.merge(Self.defaultLayout()) { _, inherited in inherited }
             let data = try PropertyListSerialization.data(fromPropertyList: settings, format: .xml, options: 0)
             try data.write(to: profile, options: .atomic)
         } catch {
             try? manager.removeItem(at: directory)
             throw error
         }
+    }
+
+    private static func defaultLayout(preferences: UserDefaults? = UserDefaults(suiteName: "com.apple.Terminal")) -> [String: Any] {
+        let name = preferences?.string(forKey: "Default Window Settings") ?? "Basic"
+        let profiles = preferences?.dictionary(forKey: "Window Settings")
+        let saved = profiles?[name] as? [String: Any] ?? [:]
+        let standard = builtInProfile("Basic")
+        let selected = name == "Basic" ? standard : builtInProfile(name)
+        var layout: [String: Any] = [:]
+        for key in ["columnCount", "rowCount", "Font", "FontWidthSpacing", "FontHeightSpacing", "FontAntialias"] {
+            layout[key] = saved[key] ?? selected[key] ?? standard[key]
+        }
+        return layout
+    }
+
+    private static func builtInProfile(_ name: String) -> [String: Any] {
+        guard !name.isEmpty, !(name as NSString).isAbsolutePath, !name.contains("/") else { return [:] }
+        let directory = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app/Contents/Resources/Initial Settings")
+        let source = directory.appendingPathComponent(name).appendingPathExtension("terminal")
+        guard let data = try? Data(contentsOf: source),
+              let values = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
+            return [:]
+        }
+        return values
     }
 
     private static func appearanceSettings(dark: Bool) throws -> [String: Data] {
