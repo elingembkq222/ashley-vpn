@@ -6,7 +6,7 @@ enum CodexProxyStatus {
 
     struct Route: Equatable, Sendable {
         enum Kind: Equatable, Sendable {
-            case localProxy(connected: Bool)
+            case localProxy(connected: Bool, url: URL)
             case systemVPN
         }
 
@@ -15,16 +15,42 @@ enum CodexProxyStatus {
         let kind: Kind
     }
 
-    static func routes(codex: URL) -> [Route] {
-        let codexPath = codex.resolvingSymlinksInPath().path + "/Contents/"
+    struct Selection: Codable, Sendable {
+        let id: String
+        let name: String
+        let proxyURL: URL?
+
+        init(_ route: Route) {
+            id = route.id
+            name = route.name
+            if case let .localProxy(_, url) = route.kind {
+                proxyURL = url
+            } else {
+                proxyURL = nil
+            }
+        }
+    }
+
+    static func routes(codex: URL?, savedProxy: URL?) -> [Route] {
+        let codexPath = codex.map { $0.resolvingSymlinksInPath().path + "/Contents/" }
         var proxies: [String: Route] = [:]
-        for endpoint in localProxyEndpoints() {
+        let urls = localProxyURLs() + [savedProxy].compactMap { $0 }
+        var checked = Set<URL>()
+        for url in urls where checked.insert(url).inserted {
+            guard let endpoint = loopbackEndpoint(url) else { continue }
             guard let snapshot = output("/usr/sbin/lsof", ["-nP", "-iTCP@\(endpoint)", "-FfpnT", "-Ts"]) else {
                 continue
             }
-            for proxy in proxyRoutes(snapshot, endpoint: endpoint, codexPath: codexPath, pathForPID: executablePath) {
-                if let prior = proxies[proxy.id], case .localProxy(true) = prior.kind { continue }
-                proxies[proxy.id] = proxy
+            if let proxy = proxyRoute(snapshot, url: url, endpoint: endpoint,
+                                      codexPath: codexPath, pathForPID: executablePath) {
+                if let prior = proxies[proxy.id], case let .localProxy(connected, preferredURL) = prior.kind {
+                    if case .localProxy(true, _) = proxy.kind, !connected {
+                        proxies[proxy.id] = Route(id: prior.id, name: prior.name,
+                                                  kind: .localProxy(connected: true, url: preferredURL))
+                    }
+                } else {
+                    proxies[proxy.id] = proxy
+                }
             }
         }
 
@@ -46,8 +72,8 @@ enum CodexProxyStatus {
         }
     }
 
-    static func proxyRoutes(_ snapshot: String, endpoint: String, codexPath: String,
-                            pathForPID: (Int32) -> String?) -> [Route] {
+    static func proxyRoute(_ snapshot: String, url: URL, endpoint: String, codexPath: String?,
+                           pathForPID: (Int32) -> String?) -> Route? {
         var executable: String?
         var socket = ""
         var listeners = Set<String>()
@@ -62,18 +88,18 @@ enum CodexProxyStatus {
                 socket = String(line.dropFirst())
             } else if line == "TST=LISTEN", let executable {
                 listeners.insert(executable)
-            } else if line == "TST=ESTABLISHED", executable?.hasPrefix(codexPath) == true,
+            } else if line == "TST=ESTABLISHED", let codexPath, executable?.hasPrefix(codexPath) == true,
                       socket.hasSuffix("->" + endpoint) {
                 connected = true
             }
         }
-        let routes = listeners.compactMap(proxyOwner)
-        let ids = Set(routes.map(\.id))
-        guard routes.count == listeners.count, ids.count == 1, let proxy = routes.first else { return [] }
-        return [Route(id: proxy.id, name: proxy.name, kind: .localProxy(connected: connected))]
+        let owners = listeners.compactMap(proxyOwner)
+        let ids = Set(owners.map(\.id))
+        guard owners.count == listeners.count, ids.count == 1, let owner = owners.first else { return nil }
+        return Route(id: owner.id, name: owner.name, kind: .localProxy(connected: connected, url: url))
     }
 
-    private static func proxyOwner(_ path: String) -> Route? {
+    private static func proxyOwner(_ path: String) -> (id: String, name: String)? {
         let executable = URL(fileURLWithPath: path)
         let components = executable.pathComponents
         let bundle = components.firstIndex { $0.lowercased().hasSuffix(".app") }
@@ -85,29 +111,83 @@ enum CodexProxyStatus {
             ?? executable.lastPathComponent
         let identifier = bundle?.bundleIdentifier ?? executable.path
         guard !isGlobalProtect([name, identifier, path].joined(separator: " ")) else { return nil }
-        return Route(id: "proxy:" + identifier, name: name, kind: .localProxy(connected: false))
+        return (id: "proxy:" + identifier, name: name)
     }
 
-    private static func localProxyEndpoints() -> [String] {
+    private static func localProxyURLs() -> [URL] {
         guard let settings = SCDynamicStoreCopyProxies(nil) as? [String: Any] else { return [] }
         let kinds = [
-            (kSCPropNetProxiesHTTPEnable, kSCPropNetProxiesHTTPProxy, kSCPropNetProxiesHTTPPort),
-            (kSCPropNetProxiesHTTPSEnable, kSCPropNetProxiesHTTPSProxy, kSCPropNetProxiesHTTPSPort),
-            (kSCPropNetProxiesSOCKSEnable, kSCPropNetProxiesSOCKSProxy, kSCPropNetProxiesSOCKSPort)
+            ("http", kSCPropNetProxiesHTTPSEnable, kSCPropNetProxiesHTTPSProxy, kSCPropNetProxiesHTTPSPort),
+            ("http", kSCPropNetProxiesHTTPEnable, kSCPropNetProxiesHTTPProxy, kSCPropNetProxiesHTTPPort),
+            ("socks5h", kSCPropNetProxiesSOCKSEnable, kSCPropNetProxiesSOCKSProxy, kSCPropNetProxiesSOCKSPort)
         ]
-        let endpoints = kinds.flatMap { (enabled, address, portKey) -> [String] in
+        return kinds.flatMap { (scheme, enabled, address, portKey) -> [URL] in
             guard settings[enabled as String] as? Int == 1,
                   let host = settings[address as String] as? String,
                   let port = settings[portKey as String] as? Int,
                   (1...65535).contains(port) else { return [] }
-            switch host.lowercased() {
-            case "localhost": return ["127.0.0.1:\(port)", "[::1]:\(port)"]
-            case "127.0.0.1": return ["127.0.0.1:\(port)"]
-            case "::1", "[::1]": return ["[::1]:\(port)"]
-            default: return []
+            let hosts = host.lowercased() == "localhost" ? ["127.0.0.1", "[::1]"] : [host]
+            return hosts.compactMap { host in
+                let address = host == "::1" ? "[::1]" : host
+                guard let url = URL(string: "\(scheme)://\(address):\(port)"), loopbackEndpoint(url) != nil else {
+                    return nil
+                }
+                return url
             }
         }
-        return Set(endpoints).sorted()
+    }
+
+    private static func loopbackEndpoint(_ url: URL) -> String? {
+        guard url.scheme == "http" || url.scheme == "socks5h", let host = url.host, let port = url.port,
+              (1...65535).contains(port), url.user == nil, url.password == nil,
+              url.path.isEmpty, url.query == nil, url.fragment == nil else { return nil }
+        switch host {
+        case "127.0.0.1": return "\(host):\(port)"
+        case "::1", "[::1]": return "[::1]:\(port)"
+        default: return nil
+        }
+    }
+
+    static func proxyIsReachable(_ url: URL) -> Bool {
+        guard loopbackEndpoint(url) != nil else { return false }
+        let status = output("/usr/bin/curl", ["-q", "--silent", "--noproxy", "", "--proxy", url.absoluteString,
+                                              "--connect-timeout", "4", "--max-time", "6", "--output", "/dev/null",
+                                              "--write-out", "%{http_code}",
+                                              "https://chatgpt.com/backend-api/codex/responses"])
+        return status == "405" || status == "401"
+    }
+
+    static func vpnStatus(_ id: String) -> String? {
+        guard let service = vpnService(id) else { return nil }
+        return output("/usr/sbin/scutil", ["--nc", "status", service])?.split(whereSeparator: \.isNewline)
+            .first.map(String.init)
+    }
+
+    static func changeVPN(_ id: String, connect: Bool) -> Bool {
+        guard let service = vpnService(id) else { return false }
+        return output("/usr/sbin/scutil", ["--nc", connect ? "start" : "stop", service]) != nil
+    }
+
+    static func vpnCarriesCodexTraffic(_ id: String) -> Bool {
+        guard let service = vpnService(id), let store = SCDynamicStoreCreate(nil, "Ashley VPN" as CFString, nil, nil)
+        else { return false }
+        var routed = false
+        for (family, key) in [("-inet", "IPv4"), ("-inet6", "IPv6")] {
+            guard let route = output("/sbin/route", ["-n", "get", family, "chatgpt.com"]),
+                  let interface = route.split(whereSeparator: \.isNewline).first(where: {
+                      $0.trimmingCharacters(in: .whitespaces).hasPrefix("interface:")
+                  })?.split(whereSeparator: \.isWhitespace).last else { continue }
+            let stateKey = "State:/Network/Service/\(service)/\(key)" as CFString
+            let state = SCDynamicStoreCopyValue(store, stateKey) as? [String: Any]
+            guard String(interface) == state?["InterfaceName"] as? String else { return false }
+            routed = true
+        }
+        return routed
+    }
+
+    private static func vpnService(_ id: String) -> String? {
+        guard id.hasPrefix("vpn:"), let uuid = UUID(uuidString: String(id.dropFirst(4))) else { return nil }
+        return uuid.uuidString
     }
 
     private static func isGlobalProtect(_ identity: String) -> Bool {

@@ -26,6 +26,8 @@ If the private key was inadvertently set to prompt for a password on every use, 
 
 Open a Terminal window and run `ashleyvpn`. Use the menu bar or floating desktop icon to connect or disconnect. Terminal opens when Wi-Fi selection, a password, or administrator approval is needed. Connection and shutdown progress appear by the floating icon and on the menu bar. The icon turns orange when the VPN tunnel is up.
 
+In the menu bar, choose a fallback under **Codex 流量**. Ashley VPN remembers the selection and applies it after the company VPN disconnects. Choose **无** to use the default network settings. A local proxy must be running and able to reach Codex. Ashley VPN may reopen Codex to apply or remove a local proxy. A macOS VPN uses the routes from its system profile and can affect other apps on the Mac.
+
 ## Uninstall
 
 Run this from the macOS account that installed Ashley VPN.
