@@ -136,11 +136,9 @@ _gp-run-input() {
   prepare_terminal_banner
   case "$mode" in
     connect-wifi|connect-wifi-reset)
-      _gp-terminal-title '连接集团 VPN'
       if [[ "$mode" == connect-wifi-reset ]]; then _gp-connect-wifi reset; else _gp-connect-wifi; fi
       ;;
     disconnect-wifi)
-      _gp-terminal-title '切换 Wi-Fi'
       _gp-disconnect-wifi
       ;;
     stop-system)

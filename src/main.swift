@@ -305,17 +305,18 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             self.progress = ""
             self.progressStep = nil
             self.progressRemaining = nil
+            let cancelled = code == 130 || (code != 0 && self.cancellation != nil)
             if code == 0 {
                 self.feedback = raw.contains("VPN 已连接") ? "集团 VPN 已连接" : "集团 VPN 已关闭"
                 self.feedbackTone = .success
-            } else if code == 130 {
-                self.feedback = "已取消本次操作"
+            } else if cancelled {
+                self.feedback = ""
                 self.feedbackTone = .neutral
             } else {
                 self.feedback = raw.split(whereSeparator: \.isNewline).last.map(String.init) ?? "VPN 操作未完成"
                 self.feedbackTone = .warning
             }
-            self.feedbackUntil = self.uptime + 5
+            self.feedbackUntil = cancelled ? 0 : self.uptime + 5
             self.updateDisplay()
             self.refreshStatus()
         }

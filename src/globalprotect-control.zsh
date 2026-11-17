@@ -433,11 +433,44 @@ _gp-wifi-row() {
   printf '\n'
 }
 
+_gp-wifi-refresh-list() {
+  local gpFound gpName
+  local -a gpPinned
+  local -aU gpScanned
+  gpCurrent='' gpKeep=false gpFallback=false
+  [[ "$gpMode" != disconnect ]] || gpKeep=true
+  if _gp-net-interface-active "$GP_WIFI_IFACE"; then
+    gpKeep=true
+    gpCurrent=$(gp-net-current-ssid)
+    [[ "$gpCurrent" != '<redacted>' ]] || gpCurrent=''
+  fi
+  if ! gpFound=$(_gp-scan-wifi 2>/dev/null) || [[ -z "$gpFound" ]]; then
+    gpFound=$(LC_ALL=C /usr/sbin/networksetup -listpreferredwirelessnetworks "$GP_WIFI_IFACE" 2>/dev/null |
+      /usr/bin/awk 'NR > 1 { sub(/^\t/, ""); print }')
+    gpFallback=true
+  fi
+  for gpName in "$gpCurrent" "${(@f)gpFound}"; do
+    [[ -n "$gpName" && "$gpName" != *[[:cntrl:]]* ]] && gpScanned+=("$gpName")
+  done
+  if [[ "$gpMode" == disconnect ]]; then
+    gpPinned=(OfficeWiFi officewifi)
+  else
+    gpPinned=(officewifi OfficeWiFi)
+  fi
+  gpNetworks=()
+  for gpName in "${gpPinned[@]}" "${(@oi)gpScanned}"; do
+    (( ${gpScanned[(Ie)$gpName]} )) && gpNetworks+=("$gpName")
+  done
+}
+
 _gp-wifi-picker() {
   emulate -L zsh
-  local gpCurrent="$1" gpKeep="$2" gpFallback="$3" gpMode="$4"
-  shift 4
-  local -a gpNetworks=("$@") gpVisible
+  local gpMode="$1" gpCurrent='' gpKeep=false gpFallback=false
+  local -aU gpNetworks
+  local -a gpVisible gpPreviousLines gpLines
+  local ASHLEY_VPN_BUFFERED_TTY=1
+  local gpScanning=true gpHiddenEntry=false gpHiddenName=''
+  local gpFrame gpDiff gpLine gpPreviousViewport=''
   local gpKey gpName gpLabel gpQuery='' gpSearch=false gpCount gpKeepRow gpScanRow gpHiddenRow
   local gpIndex gpSelected=1 gpFirst=1 gpLast gpLimit gpTerminal gpInterrupted=false
   local gpViewport gpReleaseSnapshot gpLatestSnapshot
@@ -495,8 +528,7 @@ _gp-wifi-picker() {
       (( gpSelected >= gpFirst + gpLimit )) && gpFirst=$(( gpSelected - gpLimit + 1 ))
       (( gpLast = gpFirst + gpLimit - 1 > ${#gpVisible} ? ${#gpVisible} : gpFirst + gpLimit - 1 ))
 
-      {
-        printf '\e[H\e[J'
+      gpFrame=$({
         _gp-terminal-banner "$gpBannerColumns"
         if [[ "$gpFramed" == true ]]; then
           gpTitle="╭── $gpAction "
@@ -506,17 +538,30 @@ _gp-wifi-picker() {
         else
           _gp-wifi-row "$gpWidth" false heading "$gpAction"
         fi
-        if [[ "$gpSearch" == true ]]; then
+        if [[ "$gpScanning" == true ]]; then
+          _gp-wifi-row "$gpWidth" "$gpFramed" muted '正在扫描附近的 Wi-Fi…'
+        elif [[ "$gpHiddenEntry" == true ]]; then
+          _gp-wifi-row "$gpWidth" "$gpFramed" heading '隐藏网络名称  ' normal "$gpHiddenName▏"
+        elif [[ "$gpSearch" == true ]]; then
           _gp-wifi-row "$gpWidth" "$gpFramed" heading '搜索  ' normal "$gpQuery▏"
         elif [[ -n "$gpQuery" ]]; then
           _gp-wifi-row "$gpWidth" "$gpFramed" muted '筛选  ' normal "$gpQuery"
         elif [[ "$gpFallback" == true ]]; then
           _gp-wifi-row "$gpWidth" "$gpFramed" muted '已保存的网络'
+        else
+          _gp-wifi-row "$gpWidth" "$gpFramed"
         fi
-        if (( gpLast < gpFirst )); then
-          _gp-wifi-row "$gpWidth" "$gpFramed" muted '找不到匹配的网络'
-        fi
-        for (( gpIndex = gpFirst; gpIndex <= gpLast; gpIndex++ )); do
+        for (( gpIndex = gpFirst; gpIndex < gpFirst + gpLimit; gpIndex++ )); do
+          if [[ "$gpScanning" == true || "$gpHiddenEntry" == true ]] || (( gpIndex > gpLast )); then
+            if [[ "$gpHiddenEntry" == true ]] && (( gpIndex == gpFirst )); then
+              _gp-wifi-row "$gpWidth" "$gpFramed" muted '网络名称区分大小写。'
+            elif [[ "$gpScanning" == false ]] && (( gpIndex == gpFirst && gpLast < gpFirst )); then
+              _gp-wifi-row "$gpWidth" "$gpFramed" muted '找不到匹配的网络'
+            else
+              _gp-wifi-row "$gpWidth" "$gpFramed"
+            fi
+            continue
+          fi
           gpLabel=$gpVisible[gpIndex]
           gpMarker=' ' gpTone=normal gpBadge=''
           (( gpIndex > gpCount )) && gpTone=muted
@@ -530,11 +575,17 @@ _gp-wifi-picker() {
           (( ${(m)#gpLabel} <= gpLabelWidth )) || gpLabel=$(_gp-terminal-fit "$gpLabel" "$gpLabelWidth")
           _gp-wifi-row "$gpWidth" "$gpFramed" brand "$gpMarker " "$gpTone" "$gpLabel" success "$gpBadge"
         done
-        if (( ${#gpVisible} > gpLimit )); then
+        if [[ "$gpScanning" == false && "$gpHiddenEntry" == false ]] && (( ${#gpVisible} > gpLimit )); then
           _gp-wifi-row "$gpWidth" "$gpFramed" muted "$gpFirst–$gpLast / ${#gpVisible}"
+        else
+          _gp-wifi-row "$gpWidth" "$gpFramed"
         fi
         _gp-wifi-row "$gpWidth" "$gpFramed" muted "${(l:$gpWidth::─:)gpRule}"
-        if [[ "$gpSearch" == true || -n "$gpQuery" ]]; then
+        if [[ "$gpScanning" == true ]]; then
+          gpFooter='请稍候'
+        elif [[ "$gpHiddenEntry" == true ]]; then
+          gpFooter='↵ 确认  Esc 返回'
+        elif [[ "$gpSearch" == true || -n "$gpQuery" ]]; then
           gpFooter='↑↓ 选择  ↵ 确认  Esc 清除'
         else
           gpFooter='↑↓ 选择  ↵ 确认  Tab 搜索  Esc 取消'
@@ -547,8 +598,35 @@ _gp-wifi-picker() {
           _gp-terminal-text brand "  ╰${(l:$gpBottomWidth::─:)gpRule}╯"
           printf '\n'
         fi
-      } >&2
+      })
+      gpLines=("${(@f)gpFrame}")
+      gpDiff=''
+      if [[ -n "$gpPreviousViewport" && "$gpPreviousViewport" != "$gpViewport" ]]; then
+        gpDiff=$'\e[H\e[J'
+        gpPreviousLines=()
+      fi
+      for (( gpLine=1; gpLine <= ${#gpLines} || gpLine <= ${#gpPreviousLines}; gpLine++ )); do
+        if [[ "${gpLines[gpLine]-}" != "${gpPreviousLines[gpLine]-}" ]]; then
+          gpDiff+=$'\e['"$gpLine"$';1H\e[2K'"${gpLines[gpLine]-}"
+        fi
+      done
+      [[ -z "$gpDiff" ]] || printf '%s' "$gpDiff" >&2
+      gpPreviousLines=("${gpLines[@]}")
+      gpPreviousViewport="$gpViewport"
 
+      if [[ "$gpScanning" == true ]]; then
+        _gp-wifi-refresh-list
+        [[ "$gpInterrupted" == false ]] || return 130
+        gpScanning=false
+        if [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]]; then
+          if [[ "$gpMode" == disconnect ]]; then
+            _gp-gui-progress 'VPN 已关闭，请在终端选择 Wi-Fi'
+          else
+            _gp-gui-progress '请在终端选择 Wi-Fi'
+          fi
+        fi
+        continue
+      fi
       until _gp-wifi-read-key; do
         [[ "$gpInterrupted" == true ]] && return 130
         [[ "$(/bin/stty size)" != "$gpViewport" ]] && continue 2
@@ -556,6 +634,18 @@ _gp-wifi-picker() {
         [[ "$gpLatestSnapshot" != "$gpReleaseSnapshot" ]] && continue 2
       done
       [[ "$gpInterrupted" == true ]] && return 130
+      if [[ "$gpHiddenEntry" == true ]]; then
+        case "$gpKey" in
+          $'\e') gpHiddenEntry=false ;;
+          $'\r'|$'\n')
+            if [[ -n "$gpHiddenName" ]]; then REPLY="$gpHiddenName"; return 0; fi
+            gpHiddenEntry=false
+            ;;
+          $'\177'|$'\b') [[ -z "$gpHiddenName" ]] || gpHiddenName=${gpHiddenName[1,-2]} ;;
+          [[:print:]]) gpHiddenName+="$gpKey" ;;
+        esac
+        continue
+      fi
       case "$gpKey" in
         $'\e[A') (( gpSelected > 1 )) && (( gpSelected-- )) ;;
         $'\e[B') (( gpSelected < ${#gpVisible} )) && (( gpSelected++ )) ;;
@@ -577,8 +667,14 @@ _gp-wifi-picker() {
             REPLY=''
             return 0
           fi
-          (( gpSelected == gpScanRow )) && return 2
-          (( gpSelected == gpHiddenRow )) && return 3
+          if (( gpSelected == gpScanRow )); then
+            gpScanning=true gpSelected=1 gpFirst=1
+            continue
+          fi
+          if (( gpSelected == gpHiddenRow )); then
+            gpHiddenEntry=true gpHiddenName=''
+            continue
+          fi
           if (( gpSelected <= gpCount )); then
             REPLY="$gpVisible[gpSelected]"
             return 0
@@ -604,67 +700,9 @@ _gp-wifi-picker() {
 }
 
 _gp-select-wifi() {
-  emulate -L zsh
   [[ -t 0 && -t 2 ]] || return 1
   REPLY=''
-  local gpMode="$1" gpFound gpName gpCurrent gpInput gpFallback gpKeep gpResult
-  local -a gpPinned
-  local -aU gpNetworks gpOrdered
-  if [[ "$gpMode" == disconnect ]]; then
-    gpPinned=(OfficeWiFi officewifi)
-  else
-    gpPinned=(officewifi OfficeWiFi)
-  fi
-
-  while true; do
-    gpCurrent='' gpKeep=false
-    [[ "$gpMode" == disconnect ]] && gpKeep=true
-    if _gp-net-interface-active "$GP_WIFI_IFACE"; then
-      gpKeep=true
-      gpCurrent=$(gp-net-current-ssid)
-      [[ "$gpCurrent" == '<redacted>' ]] && gpCurrent=''
-    fi
-    gpFallback=false
-    if ! gpFound=$(_gp-scan-wifi) || [[ -z "$gpFound" ]]; then
-      gpFound=$(LC_ALL=C /usr/sbin/networksetup -listpreferredwirelessnetworks "$GP_WIFI_IFACE" 2>/dev/null |
-        /usr/bin/awk 'NR > 1 { sub(/^\t/, ""); print }')
-      gpFallback=true
-    fi
-    gpNetworks=()
-    for gpName in "$gpCurrent" "${(@f)gpFound}"; do
-      [[ -n "$gpName" && "$gpName" != *[[:cntrl:]]* ]] && gpNetworks+=("$gpName")
-    done
-    gpOrdered=()
-    for gpName in "${gpPinned[@]}" "${(@oi)gpNetworks}"; do
-      (( ${gpNetworks[(Ie)$gpName]} )) && gpOrdered+=("$gpName")
-    done
-
-    if [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]]; then
-      if [[ "$gpMode" == disconnect ]]; then
-        _gp-gui-progress 'VPN 已关闭，请在终端选择 Wi-Fi'
-      else
-        _gp-gui-progress '请在终端选择 Wi-Fi'
-      fi
-    fi
-    while true; do
-      gpResult=0
-      _gp-wifi-picker "$gpCurrent" "$gpKeep" "$gpFallback" "$gpMode" "${gpOrdered[@]}" || gpResult=$?
-      case "$gpResult" in
-        2) break ;;
-        3)
-          _gp-terminal-input-heading '输入隐藏网络名称'
-          _gp-terminal-message brand '›' '完整 Wi-Fi 名称区分大小写，直接回车返回。'
-          printf '  Wi-Fi 名称：' >&2
-          IFS= read -r gpInput || return 1
-          if [[ -n "$gpInput" ]]; then
-            REPLY="$gpInput"
-            return 0
-          fi
-          ;;
-        *) return "$gpResult" ;;
-      esac
-    done
-  done
+  _gp-wifi-picker "$1"
 }
 
 gp-disconnect() {
@@ -689,16 +727,21 @@ gp-disconnect() {
 
 _gp-disconnect-wifi() {
   emulate -L zsh
-  local GP_WIFI_IFACE REPLY gpSelection=0
+  local GP_WIFI_IFACE REPLY gpSelection=0 gpSwitchStatus=0
   GP_WIFI_IFACE=$(_gp-net-interfaces wifi | /usr/bin/head -n 1)
   [[ -n "$GP_WIFI_IFACE" ]] || return 0
   _gp-select-wifi disconnect || gpSelection=$?
   (( gpSelection == 130 )) && return 130
   if (( gpSelection != 0 )) || [[ -z "$REPLY" ]]; then
     print -r -- 'VPN 已关闭，保留当前网络设置。'
-  elif ! wifi-switch "$REPLY"; then
-    print -ru2 -- 'VPN 已关闭，Wi-Fi 切换未完成。'
-    return 1
+  else
+    _gp-terminal-title '切换 Wi-Fi'
+    wifi-switch "$REPLY" || gpSwitchStatus=$?
+    (( gpSwitchStatus == 130 )) && return 130
+    if (( gpSwitchStatus != 0 )); then
+      print -ru2 -- 'VPN 已关闭，Wi-Fi 切换未完成。'
+      return 1
+    fi
   fi
 }
 
@@ -778,10 +821,46 @@ _gp-wifi-join-default() {
   fi
 }
 
+_gp-read-wifi-password() {
+  local gpChoice gpClipboard gpPrompt
+  printf '\n' >&2
+  _gp-terminal-message muted '·' 'P 粘贴剪贴板密码   ↵ 手动输入   Q 取消'
+  printf '\n' >&2
+  if ! IFS= read -rs 'gpChoice?  选择输入方式 [P/↵/Q]：'; then
+    printf '\n' >&2
+    return 130
+  fi
+  printf '\n' >&2
+  case "$gpChoice" in
+    p|P)
+      # Preserve trailing newlines so an accidental multi-line paste is rejected.
+      if ! gpClipboard=$(/usr/bin/pbpaste -Prefer txt 2>/dev/null && printf '\034'); then
+        _gp-terminal-message warning '!' '无法读取剪贴板，请重新复制或手动输入。'
+        return 2
+      fi
+      gpPassword=${gpClipboard%$'\034'}
+      if [[ -z "$gpPassword" || "$gpPassword" == *[[:cntrl:]]* ]]; then
+        gpPassword=''
+        _gp-terminal-message warning '!' '剪贴板为空或包含多行，请只复制密码。'
+        return 2
+      fi
+      ;;
+    '')
+      _gp-terminal-message muted '·' '支持 ⌘V 粘贴。密码不回显，直接回车取消。'
+      gpPrompt=$(_gp-terminal-text heading '  Wi-Fi 密码：')
+      IFS= read -rs "gpPassword?$gpPrompt" || gpPassword=''
+      printf '\n' >&2
+      [[ -n "$gpPassword" ]] || return 130
+      ;;
+    q|Q) return 130 ;;
+    *) _gp-terminal-message warning '!' '按 P 粘贴、回车手动输入，或按 Q 取消。'; return 2 ;;
+  esac
+}
+
 wifi-switch() {
   emulate -L zsh
   unsetopt xtrace
-  local gpSsid="$1" gpCur gpPassword gpStatus gpPrompt
+  local gpSsid="$1" gpCur gpPassword gpStatus gpInputStatus
   local gpKeychain="$ASHLEY_VPN_RESOURCES/wifi-keychain"
   if [[ -z "$gpSsid" || "$gpSsid" == *[[:cntrl:]]* ]] ||
      ! (LC_ALL=C; (( ${#gpSsid} <= 32 ))); then
@@ -816,18 +895,15 @@ wifi-switch() {
     return 1
   fi
   _gp-terminal-input-heading '输入 Wi-Fi 密码'
+  printf '\n' >&2
   _gp-terminal-message brand '›' "Wi-Fi  $gpSsid"
-  _gp-terminal-message muted '·' '密码输入时不回显，直接回车取消。'
-  gpPrompt=$(_gp-terminal-text heading '  Wi-Fi 密码：')
   while true; do
     gpPassword=''
     [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '请在终端输入 Wi-Fi 密码'
-    if ! IFS= read -rs "gpPassword?$gpPrompt"; then
-      print -ru2 -- ''
-      return 130
-    fi
-    print -ru2 -- ''
-    [[ -n "$gpPassword" ]] || return 130
+    gpInputStatus=0
+    _gp-read-wifi-password || gpInputStatus=$?
+    (( gpInputStatus != 2 )) || continue
+    (( gpInputStatus == 0 )) || return "$gpInputStatus"
     gpStatus=0
     print -r -- "$gpPassword" | _gp-progress-run "正在验证 Wi-Fi 密码并加入 $gpSsid" _gp-wifi-join "$gpSsid" - || gpStatus=$?
     (( gpStatus == 0 )) && break
@@ -998,6 +1074,7 @@ _gp-connect-wifi() {
   fi
   _gp-select-wifi connect || return 130
   gpSsid="$REPLY"
+  _gp-terminal-title '连接集团 VPN'
   _gp-reset-first-connection "${1:-}" || return
   if [[ -n "$gpSsid" ]]; then
     wifi-switch "$gpSsid"
