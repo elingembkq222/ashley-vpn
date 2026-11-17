@@ -26,7 +26,9 @@ If the private key was inadvertently set to prompt for a password on every use, 
 
 Open a Terminal window and run `ashleyvpn`. Use the menu bar or floating desktop icon to connect or disconnect. Terminal opens when Wi-Fi selection, a password, or administrator approval is needed. Connection and shutdown progress appear by the floating icon and on the menu bar. The icon turns orange when the VPN tunnel is up.
 
-In the menu bar, choose a fallback under **Codex 流量**. Ashley VPN remembers the selection and applies it after the company VPN disconnects. Choose **无** to use the default network settings. A local proxy must be running and able to reach Codex. Ashley VPN may reopen Codex to apply or remove a local proxy. A macOS VPN uses the routes from its system profile and can affect other apps on the Mac.
+In the menu bar, choose a fallback under **Codex 流量**. Ashley VPN remembers the selection and checks the route after the company VPN disconnects. Choose **无** to leave routing to your normal network settings. Ashley VPN leaves the running Codex process open.
+
+For LibCyber or another local proxy, enable **System Proxy** in that app. In Codex, add `respect_system_proxy = true` under `[features]` in `~/.codex/config.toml`. Codex reads this option the next time you open it. Ashley VPN checks the effective macOS proxy for `chatgpt.com`. A macOS VPN uses the routes from its system profile and can affect other apps on the Mac.
 
 ## Uninstall
 
