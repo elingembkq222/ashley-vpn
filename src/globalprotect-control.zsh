@@ -303,21 +303,9 @@ _gp-wifi-selection-note() {
   local label='正在确认当前 Wi-Fi'
   [[ -z "$1" ]] || label="已选择 $1，正在检查 Wi-Fi"
   [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress "$label"
-  if [[ -t 2 ]]; then
+  if [[ -t 2 && -n "$1" ]]; then
     printf '\n' >&2
-    _gp-terminal-message brand '›' "$label…"
-  fi
-}
-
-_gp-terminal-fit() {
-  local gpText="$1" gpWidth="$2"
-  if (( gpWidth < 1 )); then
-    return 0
-  elif (( ${(m)#gpText} > gpWidth )); then
-    (( gpWidth-- ))
-    if (( gpWidth == 0 )); then printf '…'; else printf '%s…' "${(mr:$gpWidth:)gpText}"; fi
-  else
-    printf '%s' "$gpText"
+    _gp-terminal-message brand '›' "已选择 $1"
   fi
 }
 
@@ -425,7 +413,7 @@ _gp-wifi-row() {
   fi
   while (( $# >= 2 && width > 0 )); do
     text="$2"
-    (( ${(m)#text} <= width )) || text=$(_gp-terminal-fit "$text" "$width")
+    (( ${(m)#text} <= width )) || text=$(ashley_fit_terminal_text "$text" "$width")
     _gp-terminal-text "$1" "$text"
     (( width -= ${(m)#text} ))
     shift 2
@@ -479,7 +467,7 @@ _gp-wifi-picker() {
   local gpIndex gpSelected=1 gpFirst=1 gpLast gpLimit gpTerminal gpInterrupted=false
   local gpViewport gpReleaseSnapshot gpLatestSnapshot
   local gpRows gpColumns gpWidth gpLabelWidth gpMarker gpTone gpBadge gpFooter gpRule=''
-  local gpFramed gpTitle gpTopWidth gpBottomWidth gpBannerColumns gpBannerRows gpAction='选择 Wi-Fi'
+  local gpFramed gpTitle gpTopWidth gpBottomWidth gpBannerColumns gpBannerRows gpPanelWidth gpAction='选择 Wi-Fi'
   [[ "$gpMode" != disconnect ]] || gpAction='切换 Wi-Fi'
 
   # Draw on the alternate screen so ending the picker restores the operation log.
@@ -513,17 +501,17 @@ _gp-wifi-picker() {
       gpBannerColumns=$gpColumns gpBannerRows=3
       if (( gpRows != 0 && gpRows < 17 )); then
         gpBannerColumns=0
-      elif (( gpColumns >= 36 )); then
-        gpBannerRows=8
       fi
+      gpPanelWidth=$(ashley_panel_width "$gpBannerColumns")
       gpFramed=false
-      if (( gpColumns >= 42 && (gpRows == 0 || gpRows >= 9) )); then
+      if (( gpPanelWidth > 0 )); then
         gpFramed=true
-        (( gpWidth = gpColumns - 8 ))
+        gpBannerRows=8
+        (( gpWidth = gpPanelWidth - 4 ))
       else
         (( gpWidth = gpColumns > 12 ? gpColumns - 4 : 8 ))
+        (( gpWidth = gpWidth > 66 ? 66 : gpWidth ))
       fi
-      (( gpWidth = gpWidth > 66 ? 66 : gpWidth ))
       (( gpLimit = gpRows > 0 ? gpRows - 7 - gpBannerRows : 10 ))
       (( gpLimit = gpLimit < 1 ? 1 : gpLimit > 10 ? 10 : gpLimit ))
       (( gpSelected < gpFirst )) && gpFirst=$gpSelected
@@ -574,7 +562,7 @@ _gp-wifi-picker() {
             gpMarker='❯' gpTone=heading
           fi
           gpLabelWidth=$((gpWidth - 2 - ${(m)#gpBadge}))
-          (( ${(m)#gpLabel} <= gpLabelWidth )) || gpLabel=$(_gp-terminal-fit "$gpLabel" "$gpLabelWidth")
+          (( ${(m)#gpLabel} <= gpLabelWidth )) || gpLabel=$(ashley_fit_terminal_text "$gpLabel" "$gpLabelWidth")
           _gp-wifi-row "$gpWidth" "$gpFramed" brand "$gpMarker " "$gpTone" "$gpLabel" success "$gpBadge"
         done
         if [[ "$gpScanning" == false && "$gpHiddenEntry" == false ]] && (( ${#gpVisible} > gpLimit )); then
@@ -824,6 +812,23 @@ _gp-wifi-join-default() {
   fi
 }
 
+_gp-capture-wifi-progress-output() {
+  gpWaitOutput=$("$@" 2>&1)
+}
+
+_gp-wifi-progress() {
+  local message="$1" gpWaitOutput='' result=0
+  shift
+  if ! ashley_can_animate 2; then
+    _gp-progress-run "${message%…}" "$@"
+    return
+  fi
+  [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress "$message"
+  ashley_with_spinner 2 "$message" _gp-capture-wifi-progress-output "$@" || result=$?
+  [[ -z "$gpWaitOutput" ]] || print -ru2 -- "$gpWaitOutput"
+  return "$result"
+}
+
 _gp-read-wifi-password() {
   emulate -L zsh
   unsetopt xtrace
@@ -839,7 +844,7 @@ _gp-read-wifi-password() {
     trap 'gpInterrupted=true' INT
     /bin/stty -echo -icanon min 1 time 0 || return 130
     # A bracketed paste keeps clipboard newlines from acting as the Enter key.
-    printf '\033[?2004h%s' "$gpPrompt" >&2
+    printf '\033[?25h\033[?2004h%s' "$gpPrompt" >&2
     while [[ "$gpInterrupted" == false ]]; do
       IFS= read -rk 1 -t 0.25 -u 0 gpKey || continue
       if [[ "$gpKey" == $'\e' ]]; then
@@ -924,14 +929,14 @@ wifi-switch() {
   fi
   gpCur=$(gp-net-current-ssid)
   if [[ "$gpCur" == "$gpSsid" ]] && _gp-net-interface-active "$GP_WIFI_IFACE"; then
-    _gp-progress-run "正在确认 $gpSsid 网络就绪" _gp-net-wait-wifi "$gpSsid" || return
+    _gp-wifi-progress "正在确认 $gpSsid 网络就绪…" _gp-net-wait-wifi "$gpSsid" || return
     print -r -- "当前已在 $gpSsid。"
     return 0
   fi
-  _gp-progress-run "正在加入 $gpSsid" _gp-wifi-join-default "$gpSsid"
+  _gp-wifi-progress "正在检查 $gpSsid 的 Wi-Fi 连接…" _gp-wifi-join-default "$gpSsid"
   gpStatus=$?
   if (( gpStatus == 0 )); then
-    _gp-progress-run "正在确认 $gpSsid 网络就绪" _gp-net-wait-wifi "$gpSsid" || return
+    _gp-wifi-progress "正在确认 $gpSsid 网络就绪…" _gp-net-wait-wifi "$gpSsid" || return
     print -r -- "已加入 $gpSsid。"
     return 0
   fi
@@ -959,7 +964,7 @@ wifi-switch() {
     _gp-read-wifi-password || gpInputStatus=$?
     (( gpInputStatus == 0 )) || return "$gpInputStatus"
     gpStatus=0
-    print -r -- "$gpPassword" | _gp-progress-run "已提交 Wi-Fi 密码，正在验证 $gpSsid" _gp-wifi-join "$gpSsid" - || gpStatus=$?
+    print -r -- "$gpPassword" | _gp-wifi-progress "已提交 Wi-Fi 密码，正在验证 $gpSsid…" _gp-wifi-join "$gpSsid" - || gpStatus=$?
     (( gpStatus == 0 )) && break
     case "$gpStatus" in
       2) _gp-terminal-message error '✕' 'Wi-Fi 密码验证失败，请重新输入。' ;;
@@ -967,7 +972,7 @@ wifi-switch() {
       *) _gp-terminal-message error '✕' "未能加入 $gpSsid，请确认网络可用后重试。" ;;
     esac
   done
-  _gp-progress-run "正在确认 $gpSsid 网络就绪" _gp-net-wait-wifi "$gpSsid" || return
+  _gp-wifi-progress "正在确认 $gpSsid 网络就绪…" _gp-net-wait-wifi "$gpSsid" || return
   _gp-terminal-message success '✓' "已加入 $gpSsid。"
   if ! print -rn -- "$gpPassword" | "$gpKeychain" save "$gpSsid"; then
     _gp-terminal-message warning '!' 'Wi-Fi 已连接，但密码未能保存到本机钥匙串。'
@@ -1134,7 +1139,7 @@ _gp-connect-wifi() {
   if [[ -n "$gpSsid" ]]; then
     wifi-switch "$gpSsid"
   else
-    _gp-progress-run '正在确认当前 Wi-Fi 网络就绪' _gp-net-wait-wifi ''
+    _gp-wifi-progress '正在确认当前 Wi-Fi 网络就绪…' _gp-net-wait-wifi ''
   fi
 }
 

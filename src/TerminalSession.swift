@@ -29,6 +29,7 @@ struct TerminalSession {
                 // The banner uses single-cell box drawing and block glyphs.
                 "EastAsianAmbiguousWide": false,
                 "CursorType": 2,
+                "CursorBlink": true,
                 "UseBoldFonts": true,
                 "UseBrightBold": false,
                 // The profile is scoped to the opened document. An imported
