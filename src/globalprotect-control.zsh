@@ -509,10 +509,8 @@ _gp-wifi-picker() {
       gpBannerColumns=$gpColumns gpBannerRows=3
       if (( gpRows != 0 && gpRows < 17 )); then
         gpBannerColumns=0
-      elif (( gpColumns >= 68 )); then
-        gpBannerRows=8
       elif (( gpColumns >= 36 )); then
-        gpBannerRows=4
+        gpBannerRows=8
       fi
       gpFramed=false
       if (( gpColumns >= 42 && (gpRows == 0 || gpRows >= 9) )); then
@@ -822,39 +820,75 @@ _gp-wifi-join-default() {
 }
 
 _gp-read-wifi-password() {
-  local gpChoice gpClipboard gpPrompt
+  emulate -L zsh
+  unsetopt xtrace
+  local gpTerminal gpKey gpPrefix gpSequence gpPart gpByte gpPrompt
+  local gpPasting=false gpPasteValid=true gpPasted='' gpInterrupted=false gpAccepted=false
+  gpTerminal=$(/bin/stty -g) || return 130
   printf '\n' >&2
-  _gp-terminal-message muted '·' 'P 粘贴剪贴板密码   ↵ 手动输入   Q 取消'
+  _gp-terminal-message muted '·' '直接输入或 ⌘V 粘贴，回车确认，Esc 取消。密码不回显。'
   printf '\n' >&2
-  if ! IFS= read -rs 'gpChoice?  选择输入方式 [P/↵/Q]：'; then
-    printf '\n' >&2
+  gpPrompt=$(_gp-terminal-text heading '  Wi-Fi 密码：')
+  {
+    trap 'gpInterrupted=true' INT
+    /bin/stty -echo -icanon min 1 time 0 || return 130
+    # A bracketed paste keeps clipboard newlines from acting as the Enter key.
+    printf '\033[?2004h%s' "$gpPrompt" >&2
+    while [[ "$gpInterrupted" == false ]]; do
+      IFS= read -rk 1 -t 0.25 -u 0 gpKey || continue
+      if [[ "$gpKey" == $'\e' ]]; then
+        IFS= read -rk 1 -t 0.12 -u 0 gpPrefix || return 130
+        [[ "$gpPrefix" == '[' || "$gpPrefix" == O ]] || return 130
+        gpSequence="$gpPrefix"
+        for gpByte in {1..12}; do
+          IFS= read -rk 1 -t 0.12 -u 0 gpPart || return 130
+          gpSequence+="$gpPart"
+          [[ "$gpPart" != [a-zA-Z~] ]] || break
+        done
+        if [[ "$gpPasting" == false && "$gpSequence" == '[200~' ]]; then
+          gpPasting=true gpPasteValid=true gpPasted=''
+        elif [[ "$gpPasting" == true && "$gpSequence" == '[201~' ]]; then
+          gpPasting=false
+          if [[ "$gpPasteValid" == true ]]; then
+            gpPassword+="$gpPasted"
+          else
+            gpPassword=''
+            printf '\n' >&2
+            _gp-terminal-message warning '!' '请只粘贴一行密码。'
+            printf '%s' "$gpPrompt" >&2
+          fi
+          gpPasted=''
+        elif [[ "$gpPasting" == true ]]; then
+          gpPasteValid=false
+        fi
+        continue
+      fi
+      if [[ "$gpPasting" == true ]]; then
+        if [[ "$gpKey" == [[:cntrl:]] ]]; then
+          gpPasteValid=false
+        else
+          gpPasted+="$gpKey"
+        fi
+        continue
+      fi
+      case "$gpKey" in
+        $'\r'|$'\n')
+          [[ -n "$gpPassword" ]] || return 130
+          gpAccepted=true
+          return 0
+          ;;
+        $'\177'|$'\b') [[ -z "$gpPassword" ]] || gpPassword=${gpPassword[1,-2]} ;;
+        $'\025') gpPassword='' ;;
+        [[:print:]]) gpPassword+="$gpKey" ;;
+      esac
+    done
     return 130
-  fi
-  printf '\n' >&2
-  case "$gpChoice" in
-    p|P)
-      # Preserve trailing newlines so an accidental multi-line paste is rejected.
-      if ! gpClipboard=$(/usr/bin/pbpaste -Prefer txt 2>/dev/null && printf '\034'); then
-        _gp-terminal-message warning '!' '无法读取剪贴板，请重新复制或手动输入。'
-        return 2
-      fi
-      gpPassword=${gpClipboard%$'\034'}
-      if [[ -z "$gpPassword" || "$gpPassword" == *[[:cntrl:]]* ]]; then
-        gpPassword=''
-        _gp-terminal-message warning '!' '剪贴板为空或包含多行，请只复制密码。'
-        return 2
-      fi
-      ;;
-    '')
-      _gp-terminal-message muted '·' '支持 ⌘V 粘贴。密码不回显，直接回车取消。'
-      gpPrompt=$(_gp-terminal-text heading '  Wi-Fi 密码：')
-      IFS= read -rs "gpPassword?$gpPrompt" || gpPassword=''
-      printf '\n' >&2
-      [[ -n "$gpPassword" ]] || return 130
-      ;;
-    q|Q) return 130 ;;
-    *) _gp-terminal-message warning '!' '按 P 粘贴、回车手动输入，或按 Q 取消。'; return 2 ;;
-  esac
+  } always {
+    [[ "$gpAccepted" == true ]] || gpPassword=''
+    /bin/stty "$gpTerminal"
+    printf '\033[?2004l' >&2
+    printf '\n' >&2
+  }
 }
 
 wifi-switch() {
@@ -902,7 +936,6 @@ wifi-switch() {
     [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '请在终端输入 Wi-Fi 密码'
     gpInputStatus=0
     _gp-read-wifi-password || gpInputStatus=$?
-    (( gpInputStatus != 2 )) || continue
     (( gpInputStatus == 0 )) || return "$gpInputStatus"
     gpStatus=0
     print -r -- "$gpPassword" | _gp-progress-run "正在验证 Wi-Fi 密码并加入 $gpSsid" _gp-wifi-join "$gpSsid" - || gpStatus=$?
