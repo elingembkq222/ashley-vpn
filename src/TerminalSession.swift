@@ -24,8 +24,10 @@ struct TerminalSession {
                 "name": "Ashley VPN",
                 "type": "Window Settings",
                 "ProfileCurrentVersion": 2.07,
-                "columnCount": 76,
-                "rowCount": 22,
+                "columnCount": 80,
+                "rowCount": 24,
+                // The banner uses single-cell box drawing and block glyphs.
+                "EastAsianAmbiguousWide": false,
                 "CursorType": 2,
                 "UseBoldFonts": true,
                 "UseBrightBold": false,

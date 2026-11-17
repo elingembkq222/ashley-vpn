@@ -1,9 +1,8 @@
 # Shared Ashley VPN heading and release status for the installer and input screens.
 ashley_terminal_accent() {
-  case "${ASHLEY_VPN_TERMINAL_PROFILE:-}:${COLORTERM:-}:${TERM:-}" in
-    1:*) print -r -- '1;91' ;;
-    *:truecolor:*|*:24bit:*) print -r -- '1;38;2;215;119;87' ;;
-    *:*:*256color*) print -r -- '1;38;5;173' ;;
+  case "${COLORTERM:-}:${TERM:-}" in
+    truecolor:*|24bit:*) print -r -- '1;38;2;215;119;87' ;;
+    *:*256color*) print -r -- '1;38;5;173' ;;
     *) print -r -- '1;33' ;;
   esac
 }
@@ -27,9 +26,14 @@ ashley_banner_cell() {
 }
 
 ashley_terminal_columns() {
-  local rows columns
-  read -r rows columns <<< "$(/bin/stty -f /dev/tty size 2>/dev/null || printf '0 %s' "${COLUMNS:-80}")"
-  [[ "$columns" == <1-> ]] && print -r -- "$columns" || print 80
+  local rows columns dimensions=''
+  if [[ -t 0 ]]; then dimensions=$(/bin/stty size 2>/dev/null) || dimensions=''; fi
+  read -r rows columns <<< "$dimensions"
+  if [[ "$columns" != <1-> ]]; then
+    dimensions=$(/bin/stty -f /dev/tty size 2>/dev/null) || dimensions=''
+    read -r rows columns <<< "$dimensions"
+  fi
+  [[ "$columns" == <1-> ]] && print -r -- "$columns" || print 0
 }
 
 ashley_welcome_panel() {
@@ -41,11 +45,11 @@ ashley_welcome_panel() {
   if (( columns < 36 )); then
     ashley_banner_paint "$accent" "  ✻ $title"
     printf '\n  %s\n' "$availability"
-    [[ -z "$primary" ]] || printf '  %s\n' "$primary"
     return
   fi
 
-  local width=$((columns > 100 ? 96 : columns - 4)) rule='' top="╭── $title " left_width=20 right_width index
+  # Match the standard installer panel, with two columns of safety at either edge.
+  local width=$((columns > 80 ? 76 : columns - 4)) rule='' top="╭── $title " left_width=20 right_width index
   local top_rule=$((width - ${(m)#top} - 1)) bottom_rule=$((width - 2))
   local -a art=('        ▄  ▄' '      ▄ █  █ ▄' '      █  ▄▄  █' '        ████' '        ▀▀▀▀')
   local -a content=("  版本状态  $availability" "  $primary" "  $details" "  $next_title" "  $next_step")
@@ -54,7 +58,6 @@ ashley_welcome_panel() {
     right_width=$((width - left_width - 3))
   else
     right_width=$bottom_rule
-    [[ -n "$primary" ]] || content=("${content[1]}")
   fi
 
   ashley_banner_paint "$accent" "  $top${(l:$top_rule::─:)rule}╮"
