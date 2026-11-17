@@ -68,7 +68,7 @@ uninstall_ashley_vpn() {
   if /usr/bin/defaults read "$domain" >/dev/null 2>&1; then
     /usr/bin/defaults delete "$domain"
   fi
-  for file in operation.lock operation.owner connected-installation home-wifi-profile; do
+  for file in operation.lock operation.owner connected-installation home-wifi-profile latest-release; do
     if [[ -f "$state/$file" || -L "$state/$file" ]]; then
       /bin/rm -- "$state/$file"
     fi

@@ -283,13 +283,26 @@ _gp-terminal-text() {
   printf '\033[%sm%s\033[0m' "${gpStyle:-0}" "$2"
 }
 
+_gp-terminal-banner() {
+  local columns="$1" availability
+  availability=$(ashley_release_status "${ashley_running_version:-}" "${ashley_running_build:-}" "$ASHLEY_VPN_STATE")
+  ashley_welcome_panel "${ashley_running_version:-}" "$availability" "$columns"
+}
+
 _gp-terminal-title() {
+  local columns=0
+  if [[ -t 2 && "${TERM:-dumb}" != dumb ]]; then columns=$(ashley_terminal_columns); fi
   {
-    _gp-terminal-text brand '  ✻ Ashley VPN'
-    _gp-terminal-text muted '  ·  '
-    _gp-terminal-text heading "$1"
+    _gp-terminal-banner "$columns"
+    _gp-terminal-text heading "  $1"
     printf '\n'
   } >&2
+}
+
+_gp-terminal-input-heading() {
+  [[ "${ASHLEY_VPN_TERMINAL_PROFILE:-}" == 1 ]] || return 0
+  [[ "${TERM:-dumb}" == dumb ]] || printf '\033[H\033[2J' >&2
+  _gp-terminal-title "$1"
 }
 
 _gp-terminal-fit() {
@@ -427,9 +440,9 @@ _gp-wifi-picker() {
   local -a gpNetworks=("$@") gpVisible
   local gpKey gpName gpLabel gpQuery='' gpSearch=false gpCount gpKeepRow gpScanRow gpHiddenRow
   local gpIndex gpSelected=1 gpFirst=1 gpLast gpLimit gpTerminal gpInterrupted=false
-  local gpViewport
+  local gpViewport gpReleaseSnapshot gpLatestSnapshot
   local gpRows gpColumns gpWidth gpLabelWidth gpMarker gpTone gpBadge gpFooter gpRule=''
-  local gpFramed gpTitle gpTopWidth gpBottomWidth gpAction='选择 Wi-Fi'
+  local gpFramed gpTitle gpTopWidth gpBottomWidth gpBannerColumns gpBannerRows gpAction='选择 Wi-Fi'
   [[ "$gpMode" != disconnect ]] || gpAction='切换 Wi-Fi'
 
   # Draw on the alternate screen so ending the picker restores the operation log.
@@ -457,8 +470,17 @@ _gp-wifi-picker() {
       (( gpSelected = gpSelected > ${#gpVisible} ? ${#gpVisible} : gpSelected ))
       (( gpSelected = gpSelected < 1 ? 1 : gpSelected ))
       gpViewport=$(/bin/stty size)
+      { IFS= read -r gpReleaseSnapshot < "$ASHLEY_VPN_STATE/latest-release"; } 2>/dev/null || gpReleaseSnapshot=''
       read -r gpRows gpColumns <<< "$gpViewport"
       (( gpColumns != 0 )) || gpColumns=76
+      gpBannerColumns=$gpColumns gpBannerRows=3
+      if (( gpRows != 0 && gpRows < 17 )); then
+        gpBannerColumns=0
+      elif (( gpColumns >= 68 )); then
+        gpBannerRows=8
+      elif (( gpColumns >= 36 )); then
+        gpBannerRows=4
+      fi
       gpFramed=false
       if (( gpColumns >= 42 && (gpRows == 0 || gpRows >= 9) )); then
         gpFramed=true
@@ -467,7 +489,7 @@ _gp-wifi-picker() {
         (( gpWidth = gpColumns > 12 ? gpColumns - 4 : 8 ))
       fi
       (( gpWidth = gpWidth > 66 ? 66 : gpWidth ))
-      (( gpLimit = gpRows > 0 ? gpRows - 7 : 10 ))
+      (( gpLimit = gpRows > 0 ? gpRows - 7 - gpBannerRows : 10 ))
       (( gpLimit = gpLimit < 1 ? 1 : gpLimit > 10 ? 10 : gpLimit ))
       (( gpSelected < gpFirst )) && gpFirst=$gpSelected
       (( gpSelected >= gpFirst + gpLimit )) && gpFirst=$(( gpSelected - gpLimit + 1 ))
@@ -475,18 +497,14 @@ _gp-wifi-picker() {
 
       {
         printf '\e[H\e[J'
+        _gp-terminal-banner "$gpBannerColumns"
         if [[ "$gpFramed" == true ]]; then
-          gpTitle="╭── ✻ Ashley VPN · $gpAction "
+          gpTitle="╭── $gpAction "
           gpTopWidth=$((gpWidth + 3 - ${(m)#gpTitle}))
           _gp-terminal-text brand "  $gpTitle${(l:$gpTopWidth::─:)gpRule}╮"
           printf '\n'
         else
-          gpTitle="✻ Ashley VPN · $gpAction"
-          if (( ${(m)#gpTitle} <= gpWidth )); then
-            _gp-wifi-row "$gpWidth" false brand '✻ Ashley VPN' muted ' · ' heading "$gpAction"
-          else
-            _gp-wifi-row "$gpWidth" false brand '✻ Ashley VPN'
-          fi
+          _gp-wifi-row "$gpWidth" false heading "$gpAction"
         fi
         if [[ "$gpSearch" == true ]]; then
           _gp-wifi-row "$gpWidth" "$gpFramed" heading '搜索  ' normal "$gpQuery▏"
@@ -534,6 +552,8 @@ _gp-wifi-picker() {
       until _gp-wifi-read-key; do
         [[ "$gpInterrupted" == true ]] && return 130
         [[ "$(/bin/stty size)" != "$gpViewport" ]] && continue 2
+        { IFS= read -r gpLatestSnapshot < "$ASHLEY_VPN_STATE/latest-release"; } 2>/dev/null || gpLatestSnapshot=''
+        [[ "$gpLatestSnapshot" != "$gpReleaseSnapshot" ]] && continue 2
       done
       [[ "$gpInterrupted" == true ]] && return 130
       case "$gpKey" in
@@ -632,6 +652,7 @@ _gp-select-wifi() {
       case "$gpResult" in
         2) break ;;
         3)
+          _gp-terminal-input-heading '输入隐藏网络名称'
           _gp-terminal-message brand '›' '完整 Wi-Fi 名称区分大小写，直接回车返回。'
           printf '  Wi-Fi 名称：' >&2
           IFS= read -r gpInput || return 1
@@ -794,6 +815,7 @@ wifi-switch() {
     print -u2 -- "$gpSsid 需要 Wi-Fi 密码。请在终端运行 wifi-switch $gpSsid，连接成功后会记住密码。"
     return 1
   fi
+  _gp-terminal-input-heading '输入 Wi-Fi 密码'
   _gp-terminal-message brand '›' "Wi-Fi  $gpSsid"
   _gp-terminal-message muted '·' '密码输入时不回显，直接回车取消。'
   gpPrompt=$(_gp-terminal-text heading '  Wi-Fi 密码：')

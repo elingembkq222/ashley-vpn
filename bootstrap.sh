@@ -97,4 +97,4 @@ if [[ "$download_animated" == true ]]; then
 else
     printf '  ✓  %s\n' 'Ashley VPN 安装包已下载'
 fi
-/bin/zsh -f "$stage/install.sh" "$@"
+ASHLEY_VPN_ONLINE_INSTALL=1 /bin/zsh -f "$stage/install.sh" "$@"
