@@ -12,7 +12,6 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private var menuStatus: NSMenuItem?
     private var menuCancel: NSMenuItem?
     private var menuCodexProxy: NSMenuItem?
-    private var codexPID: pid_t?
     private let defaults = UserDefaults.standard
     private var selectedRoute: CodexProxyStatus.Selection?
     private var proxyRoutes: [CodexProxyStatus.Route] = []
@@ -218,16 +217,6 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     }
 
     private func refreshCodexProxy() {
-        let codex = NSRunningApplication.runningApplications(withBundleIdentifier: CodexProxyStatus.codexIdentifier).first
-        if codex?.processIdentifier != codexPID {
-            resetProxyCheck()
-            codexPID = codex?.processIdentifier
-            if codex != nil, selectedRoute?.proxyURL != nil, hasVPNStatus, state != .connected,
-               !isTransitioning, !switchingCodexRoute, managedCodexProxy() == nil {
-                pendingCodexHandoff = true
-            }
-            updateProxyMenu()
-        }
         guard proxyCheck == nil,
               uptime - (lastProxyCheck ?? -.infinity) >= 5 else { return }
         lastProxyCheck = uptime
@@ -280,7 +269,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             item.isEnabled = !switchingCodexRoute
             item.state = route.id == selectedRoute?.id ? .on : .off
             if case .localProxy = route.kind {
-                item.toolTip = "应用本机代理时，Codex 可能需要重启"
+                item.toolTip = "本机代理须设为 macOS 系统代理"
             }
         }
         if let selectedRoute, !proxyRoutes.contains(where: { $0.id == selectedRoute.id }) {
@@ -322,7 +311,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         let quit = quitAfterHandoff
         quitAfterHandoff = false
         let selection = selectedRoute
-        if selection == nil && defaults.string(forKey: "startedCodexVPN") == nil && managedCodexProxy() == nil {
+        if selection == nil && defaults.string(forKey: "startedCodexVPN") == nil {
             codexRouteStatus = nil
             updateProxyMenu()
             if quit { self.quit() }
@@ -362,28 +351,20 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             defaults.removeObject(forKey: "startedCodexVPN")
         }
         if let selection, selection.proxyURL != nil {
-            guard !NSRunningApplication
-                .runningApplications(withBundleIdentifier: CodexProxyStatus.codexIdentifier).isEmpty else {
-                return (true, "Codex 启动后应用 · \(selection.name)")
-            }
-            let proxy = await Task.detached(priority: .utility) { () -> URL? in
+            let result = await Task.detached(priority: .utility) {
                 for attempt in 0..<3 {
-                    let routes = CodexProxyStatus.routes(savedProxy: selection.proxyURL)
-                    if let route = routes.first(where: { $0.id == selection.id }),
-                       case let .localProxy(url) = route.kind,
-                       CodexProxyStatus.proxyIsReachable(url) {
-                        return url
+                    if let route = CodexProxyStatus.systemProxyForCodex(), route.id == selection.id,
+                       case let .localProxy(url) = route.kind, CodexProxyStatus.proxyIsReachable(url) {
+                        return (true, "系统代理可访问 Codex · \(selection.name)")
                     }
                     if attempt < 2 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
                 }
-                return nil
+                if CodexProxyStatus.systemProxyForCodex()?.id != selection.id {
+                    return (false, "请在 \(selection.name) 中启用系统代理")
+                }
+                return (false, "\(selection.name) 暂时无法访问 Codex")
             }.value
-            guard let proxy else { return (false, "\(selection.name) 暂时无法访问 Codex") }
-            // Desktop helpers can use the system proxy even while the model runtime connects directly.
-            guard await launchCodex(using: proxy) else {
-                return (false, "未能使用 \(selection.name) 启动 Codex")
-            }
-            return (true, "Codex 代理已应用 · \(selection.name)")
+            return result
         }
         if let desiredVPN, let selection {
             let started = await Task.detached(priority: .utility) {
@@ -396,9 +377,6 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             guard await waitForVPN(desiredVPN, status: "Connected") else {
                 return (false, "\(selection.name) 尚未连接，请检查 macOS VPN 状态")
             }
-        }
-        if managedCodexProxy() != nil, !(await launchCodex(using: nil)) {
-            return (false, "未能恢复 Codex 默认代理设置")
         }
         if let desiredVPN, let selection {
             let routed = await Task.detached(priority: .utility) {
@@ -417,48 +395,6 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             }
             return false
         }.value
-    }
-
-    private func managedCodexProxy() -> String? {
-        guard let codex = NSRunningApplication.runningApplications(withBundleIdentifier: CodexProxyStatus.codexIdentifier).first,
-              let launched = codex.launchDate,
-              codex.processIdentifier == defaults.integer(forKey: "managedCodexPID"),
-              launched.timeIntervalSince1970 == defaults.double(forKey: "managedCodexLaunchDate") else { return nil }
-        return defaults.string(forKey: "managedCodexProxyURL")
-    }
-
-    private func launchCodex(using proxy: URL?) async -> Bool {
-        if let proxy, managedCodexProxy() == proxy.absoluteString { return true }
-        let identifier = CodexProxyStatus.codexIdentifier
-        let running = NSRunningApplication.runningApplications(withBundleIdentifier: identifier).first
-        guard let bundleURL = running?.bundleURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier)
-        else { return false }
-        if let running {
-            guard running.terminate() else { return false }
-            for _ in 0..<40 {
-                if running.isTerminated { break }
-                try? await Task.sleep(nanoseconds: 250_000_000)
-            }
-            guard running.isTerminated else { return false }
-        }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = false
-        if let address = proxy?.absoluteString {
-            configuration.environment = [
-                "HTTP_PROXY": address, "HTTPS_PROXY": address, "ALL_PROXY": address,
-                "http_proxy": address, "https_proxy": address, "all_proxy": address
-            ]
-        }
-        guard let launched = try? await NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration)
-        else { return false }
-        if let proxy, let date = launched.launchDate {
-            defaults.set(launched.processIdentifier, forKey: "managedCodexPID")
-            defaults.set(date.timeIntervalSince1970, forKey: "managedCodexLaunchDate")
-            defaults.set(proxy.absoluteString, forKey: "managedCodexProxyURL")
-        } else {
-            defaults.removeObject(forKey: "managedCodexProxyURL")
-        }
-        return true
     }
 
     private func toggleFromDesktop() {

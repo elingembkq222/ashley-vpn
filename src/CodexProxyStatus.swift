@@ -1,9 +1,8 @@
 import Foundation
+import CFNetwork
 import SystemConfiguration
 
 enum CodexProxyStatus {
-    static let codexIdentifier = "com.openai.codex"
-
     struct Route: Equatable, Sendable {
         enum Kind: Equatable, Sendable {
             case localProxy(url: URL)
@@ -36,12 +35,7 @@ enum CodexProxyStatus {
         let urls = localProxyURLs() + [savedProxy].compactMap { $0 }
         var checked = Set<URL>()
         for url in urls where checked.insert(url).inserted {
-            guard let endpoint = loopbackEndpoint(url) else { continue }
-            guard let snapshot = output("/usr/sbin/lsof", ["-nP", "-iTCP@\(endpoint)", "-sTCP:LISTEN", "-Fp"]) else {
-                continue
-            }
-            if let proxy = proxyRoute(snapshot, url: url, pathForPID: executablePath),
-               proxies[proxy.id] == nil {
+            if let proxy = localProxyRoute(url), proxies[proxy.id] == nil {
                 proxies[proxy.id] = proxy
             }
         }
@@ -50,6 +44,37 @@ enum CodexProxyStatus {
         return (Array(proxies.values) + services).sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+    }
+
+    static func systemProxyForCodex() -> Route? {
+        guard let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue(),
+              let destination = URL(string: "https://chatgpt.com/backend-api/codex/responses"),
+              let proxies = CFNetworkCopyProxiesForURL(destination as CFURL, settings)
+                .takeRetainedValue() as? [[String: Any]],
+              let proxy = proxies.first,
+              let type = proxy[kCFProxyTypeKey as String] as? String,
+              let host = proxy[kCFProxyHostNameKey as String] as? String,
+              let port = proxy[kCFProxyPortNumberKey as String] as? Int else { return nil }
+        let scheme: String
+        if type == kCFProxyTypeHTTP as String || type == kCFProxyTypeHTTPS as String {
+            scheme = "http"
+        } else if type == kCFProxyTypeSOCKS as String {
+            scheme = "socks5h"
+        } else {
+            return nil
+        }
+        let hosts = host.lowercased() == "localhost" ? ["127.0.0.1", "[::1]"] : [host]
+        return hosts.lazy.compactMap { host in
+            let address = host == "::1" ? "[::1]" : host
+            return URL(string: "\(scheme)://\(address):\(port)").flatMap(localProxyRoute)
+        }.first
+    }
+
+    private static func localProxyRoute(_ url: URL) -> Route? {
+        guard let endpoint = loopbackEndpoint(url),
+              let snapshot = output("/usr/sbin/lsof", ["-nP", "-iTCP@\(endpoint)", "-sTCP:LISTEN", "-Fp"])
+        else { return nil }
+        return proxyRoute(snapshot, url: url, pathForPID: executablePath)
     }
 
     static func vpnRoutes(_ snapshot: String) -> [Route] {
