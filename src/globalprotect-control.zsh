@@ -118,8 +118,8 @@ _gp-authorize-stop() {
   emulate -L zsh
   local gpInstaller="$ASHLEY_VPN_RESOURCES/setup-stop-authorization.sh"
   [[ -t 0 && -t 2 && -r "$gpInstaller" ]] || return 1
-  print -r -- '停止 GlobalProtect 系统服务需要管理员验证。'
-  /usr/bin/sudo -k -p '请输入本机管理员密码以授权停止 GlobalProtect：' -- /bin/sh "$gpInstaller"
+  _gp-terminal-message warning '◆' '停止 GlobalProtect 系统服务需要本机管理员授权。'
+  /usr/bin/sudo -k -p '  本机管理员密码：' -- /bin/sh "$gpInstaller"
 }
 
 _gp-stop-system-service() {
@@ -259,6 +259,52 @@ gp-status() {
 
 GP_WIFI_IFACE='en0'
 
+_gp-terminal-text() {
+  local gpStyle
+  if [[ ! -t 2 || "${TERM:-dumb}" == dumb || -n "${NO_COLOR:-}" ]]; then
+    printf '%s' "$2"
+    return
+  fi
+  case "$1" in
+    brand)    gpStyle='1;36' ;;
+    heading)  gpStyle='1' ;;
+    selected) gpStyle='1;7' ;;
+    success)  gpStyle='1;32' ;;
+    warning)  gpStyle='1;33' ;;
+    error)    gpStyle='1;31' ;;
+    muted)    gpStyle='2' ;;
+  esac
+  printf '\033[%sm%s\033[0m' "${gpStyle:-0}" "$2"
+}
+
+_gp-terminal-title() {
+  {
+    _gp-terminal-text brand '  ▍ Ashley VPN'
+    printf '  '
+    _gp-terminal-text heading "$1"
+    printf '\n'
+  } >&2
+}
+
+_gp-terminal-fit() {
+  local gpText="$1" gpWidth="$2"
+  if (( gpWidth < 1 )); then
+    return 0
+  elif (( ${(m)#gpText} > gpWidth )); then
+    (( gpWidth-- ))
+    if (( gpWidth == 0 )); then printf '…'; else printf '%s…' "${(mr:$gpWidth:)gpText}"; fi
+  else
+    printf '%s' "$gpText"
+  fi
+}
+
+_gp-terminal-message() {
+  {
+    _gp-terminal-text "$1" "  $2"
+    printf '  %s\n' "$3"
+  } >&2
+}
+
 _gp-net-interfaces() {
   emulate -L zsh
   LC_ALL=C /usr/sbin/networksetup -listallhardwareports 2>/dev/null | /usr/bin/awk -v kind="$1" '
@@ -347,11 +393,13 @@ _gp-wifi-read-key() {
 
 _gp-wifi-picker() {
   emulate -L zsh
-  local gpCurrent="$1" gpKeep="$2" gpFallback="$3"
-  shift 3
+  local gpCurrent="$1" gpKeep="$2" gpFallback="$3" gpMode="$4"
+  shift 4
   local -a gpNetworks=("$@") gpVisible
   local gpKey gpName gpLabel gpQuery='' gpSearch=false gpCount gpKeepRow gpScanRow gpHiddenRow
   local gpIndex gpSelected=1 gpFirst=1 gpLast gpLimit gpTerminal gpInterrupted=false
+  local gpViewport
+  local gpRows gpColumns gpWidth gpLabelWidth gpMarker gpTone gpBadge gpFooter gpRule=''
 
   # Draw on the alternate screen so ending the picker restores the operation log.
   gpTerminal=$(/bin/stty -g) || return 1
@@ -377,7 +425,11 @@ _gp-wifi-picker() {
       fi
       (( gpSelected = gpSelected > ${#gpVisible} ? ${#gpVisible} : gpSelected ))
       (( gpSelected = gpSelected < 1 ? 1 : gpSelected ))
-      (( gpLimit = LINES > 0 ? LINES - 7 : 10 ))
+      gpViewport=$(/bin/stty size)
+      read -r gpRows gpColumns <<< "$gpViewport"
+      (( gpWidth = gpColumns == 0 ? 66 : gpColumns > 12 ? gpColumns - 4 : 8 ))
+      (( gpWidth = gpWidth > 66 ? 66 : gpWidth ))
+      (( gpLimit = gpRows > 0 ? gpRows - 7 : 10 ))
       (( gpLimit = gpLimit < 1 ? 1 : gpLimit > 10 ? 10 : gpLimit ))
       (( gpSelected < gpFirst )) && gpFirst=$gpSelected
       (( gpSelected >= gpFirst + gpLimit )) && gpFirst=$(( gpSelected - gpLimit + 1 ))
@@ -385,43 +437,63 @@ _gp-wifi-picker() {
 
       {
         printf '\e[H\e[J'
-        if [[ "$gpFallback" == true ]]; then
-          print -r -- '选择 Wi-Fi（已保存的网络）'
+        if [[ "$gpMode" == disconnect ]]; then
+          _gp-terminal-title '切换 Wi-Fi'
         else
-          print -r -- '选择 Wi-Fi'
+          _gp-terminal-title '选择 Wi-Fi'
         fi
         if [[ "$gpSearch" == true ]]; then
-          print -r -- "搜索：$gpQuery▏"
+          _gp-terminal-text heading '  搜索  '
+          printf '%s▏\n' "$(_gp-terminal-fit "$gpQuery" $((gpWidth - 7)))"
         elif [[ -n "$gpQuery" ]]; then
-          print -r -- "筛选：$gpQuery"
+          _gp-terminal-text muted '  筛选  '
+          printf '%s\n' "$(_gp-terminal-fit "$gpQuery" $((gpWidth - 7)))"
+        elif [[ "$gpFallback" == true ]]; then
+          _gp-terminal-text muted '  已保存的网络'
+          printf '\n'
         fi
+        _gp-terminal-text muted "  ${(l:$gpWidth::─:)gpRule}"
+        printf '\n'
         if (( gpLast < gpFirst )); then
-          print -r -- '  找不到匹配的网络'
+          _gp-terminal-text muted '  找不到匹配的网络'
+          printf '\n'
         fi
         for (( gpIndex = gpFirst; gpIndex <= gpLast; gpIndex++ )); do
           gpLabel=$gpVisible[gpIndex]
+          gpMarker=' ' gpTone=heading gpBadge=''
+          (( gpIndex > gpCount )) && gpTone=muted
           if (( gpIndex <= gpCount )) && [[ "$gpLabel" == "$gpCurrent" ]]; then
-            gpLabel+='（当前）'
+            gpBadge='  ● 当前'
           fi
           if (( gpIndex == gpSelected )); then
-            printf '  \e[7m› %s\e[0m\n' "$gpLabel"
-          else
-            print -r -- "    $gpLabel"
+            gpMarker='›' gpTone=selected
           fi
+          gpLabelWidth=$((gpWidth - 2 - ${(m)#gpBadge}))
+          _gp-terminal-text brand "  $gpMarker "
+          _gp-terminal-text "$gpTone" "$(_gp-terminal-fit "$gpLabel" "$gpLabelWidth")"
+          [[ -z "$gpBadge" ]] || _gp-terminal-text success "$gpBadge"
+          printf '\n'
         done
         if (( ${#gpVisible} > gpLimit )); then
-          print -r -- "  $gpFirst–$gpLast / ${#gpVisible}"
+          _gp-terminal-text muted "  $gpFirst–$gpLast / ${#gpVisible}"
+          printf '\n'
         fi
-        print -r -- ''
+        _gp-terminal-text muted "  ${(l:$gpWidth::─:)gpRule}"
+        printf '\n'
         if [[ "$gpSearch" == true || -n "$gpQuery" ]]; then
-          print -r -- '↑/↓ 选择   回车 确认   Esc 清除搜索'
+          gpFooter='↑↓ 选择  ↵ 确认  Esc 清除'
         else
-          print -r -- '↑/↓ 选择   Tab 搜索   回车 确认   Esc 取消'
+          gpFooter='↑↓ 选择  ↵ 确认  Tab 搜索  Esc 取消'
+          (( ${(m)#gpFooter} <= gpWidth )) || gpFooter='↑↓  ↵  Tab 搜索  Esc 取消'
         fi
+        (( ${(m)#gpFooter} <= gpWidth )) || gpFooter='↑↓ ↵ Tab Esc'
+        _gp-terminal-text muted "  $(_gp-terminal-fit "$gpFooter" "$gpWidth")"
+        printf '\n'
       } >&2
 
       until _gp-wifi-read-key; do
         [[ "$gpInterrupted" == true ]] && return 130
+        [[ "$(/bin/stty size)" != "$gpViewport" ]] && continue 2
       done
       [[ "$gpInterrupted" == true ]] && return 130
       case "$gpKey" in
@@ -516,11 +588,13 @@ _gp-select-wifi() {
     fi
     while true; do
       gpResult=0
-      _gp-wifi-picker "$gpCurrent" "$gpKeep" "$gpFallback" "${gpOrdered[@]}" || gpResult=$?
+      _gp-wifi-picker "$gpCurrent" "$gpKeep" "$gpFallback" "$gpMode" "${gpOrdered[@]}" || gpResult=$?
       case "$gpResult" in
         2) break ;;
         3)
-          IFS= read -r 'gpInput?输入完整 Wi-Fi 名称（区分大小写，直接回车返回）：' || return 1
+          _gp-terminal-message brand '›' '完整 Wi-Fi 名称区分大小写，直接回车返回。'
+          printf '  Wi-Fi 名称：' >&2
+          IFS= read -r gpInput || return 1
           if [[ -n "$gpInput" ]]; then
             REPLY="$gpInput"
             return 0
@@ -642,7 +716,7 @@ _gp-wifi-join-default() {
 wifi-switch() {
   emulate -L zsh
   unsetopt xtrace
-  local gpSsid="$1" gpCur gpPassword gpStatus
+  local gpSsid="$1" gpCur gpPassword gpStatus gpPrompt
   local gpKeychain="$ASHLEY_VPN_RESOURCES/wifi-keychain"
   if [[ -z "$gpSsid" || "$gpSsid" == *[[:cntrl:]]* ]] ||
      ! (LC_ALL=C; (( ${#gpSsid} <= 32 ))); then
@@ -676,10 +750,13 @@ wifi-switch() {
     print -u2 -- "$gpSsid 需要 Wi-Fi 密码。请在终端运行 wifi-switch $gpSsid，连接成功后会记住密码。"
     return 1
   fi
+  _gp-terminal-message brand '›' "Wi-Fi  $gpSsid"
+  _gp-terminal-message muted '·' '密码输入时不回显，直接回车取消。'
+  gpPrompt=$(_gp-terminal-text heading '  Wi-Fi 密码：')
   while true; do
     gpPassword=''
     [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '请在终端输入 Wi-Fi 密码'
-    if ! IFS= read -rs "gpPassword?请输入 $gpSsid 的 Wi-Fi 密码（输入时不显示，直接回车取消）："; then
+    if ! IFS= read -rs "gpPassword?$gpPrompt"; then
       print -ru2 -- ''
       return 130
     fi
@@ -689,15 +766,15 @@ wifi-switch() {
     print -r -- "$gpPassword" | _gp-progress-run "正在验证 Wi-Fi 密码并加入 $gpSsid" _gp-wifi-join "$gpSsid" - || gpStatus=$?
     (( gpStatus == 0 )) && break
     case "$gpStatus" in
-      2) print -ru2 -- "Wi-Fi 密码验证失败，请重新输入。" ;;
-      3) print -ru2 -- "连接 $gpSsid 超时或尚未就绪，请核对密码后重新输入。" ;;
-      *) print -ru2 -- "未能加入 $gpSsid，请确认网络可用后重新输入密码。" ;;
+      2) _gp-terminal-message error '✕' 'Wi-Fi 密码验证失败，请重新输入。' ;;
+      3) _gp-terminal-message warning '!' "连接 $gpSsid 超时，请核对密码后重试。" ;;
+      *) _gp-terminal-message error '✕' "未能加入 $gpSsid，请确认网络可用后重试。" ;;
     esac
   done
   _gp-progress-run "正在确认 $gpSsid 网络就绪" _gp-net-wait-wifi "$gpSsid" || return
-  print -r -- "已加入 $gpSsid。"
+  _gp-terminal-message success '✓' "已加入 $gpSsid。"
   if ! print -rn -- "$gpPassword" | "$gpKeychain" save "$gpSsid"; then
-    print -u2 -- 'Wi-Fi 已连接，但密码未能保存到本机钥匙串。'
+    _gp-terminal-message warning '!' 'Wi-Fi 已连接，但密码未能保存到本机钥匙串。'
   fi
   return 0
 }

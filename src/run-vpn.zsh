@@ -120,12 +120,25 @@ _gp-run-input() {
   print -r -- "$$ $started" > "$input_path/owner.tmp" && /bin/mv -f -- "$input_path/owner.tmp" "$input_path/owner" || exit 1
   /bin/kill -0 "$owner_pid" 2>/dev/null && [[ -f "$input_path/request" ]] || exit 2
   ASHLEY_VPN_BACKGROUND=1
+  [[ "${TERM:-dumb}" == dumb ]] || printf '\033[H\033[2J' >&2
   case "$mode" in
-    connect-wifi) _gp-connect-wifi ;;
-    connect-wifi-reset) _gp-connect-wifi reset ;;
-    disconnect-wifi) _gp-disconnect-wifi ;;
-    stop-system) _gp-authorize-stop ;;
-    start-system) _gp-start-service system com.paloaltonetworks.gp.pangpsd /Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist ;;
+    connect-wifi|connect-wifi-reset)
+      _gp-terminal-title '连接集团 VPN'
+      if [[ "$mode" == connect-wifi-reset ]]; then _gp-connect-wifi reset; else _gp-connect-wifi; fi
+      ;;
+    disconnect-wifi)
+      _gp-terminal-title '切换 Wi-Fi'
+      _gp-disconnect-wifi
+      ;;
+    stop-system)
+      _gp-terminal-title '关闭集团 VPN'
+      _gp-authorize-stop
+      ;;
+    start-system)
+      _gp-terminal-title '连接集团 VPN'
+      _gp-terminal-message warning '◆' '启动 GlobalProtect 系统服务可能需要本机管理员授权。'
+      _gp-start-service system com.paloaltonetworks.gp.pangpsd /Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist
+      ;;
     *) exit 2 ;;
   esac
   exit $?
