@@ -90,12 +90,19 @@ repair_certificate_access() {
     return 1
   fi
   print -r -- "$message"
-  local repair_status=0
-  /usr/bin/sudo -k -p '请输入本机管理员密码以修复集团 VPN 证书权限：' -- "$checker" "$write_option" "$result" </dev/tty || repair_status=$?
-  if (( repair_status != 0 )); then
+  local repair_result verify_result
+  if ! repair_result=$(/usr/bin/sudo -k -p '请输入本机管理员密码以修复集团 VPN 证书权限：' -- "$checker" "$write_option" "$result" </dev/tty); then
+    print -ru2 -- "$repair_result"
     show_certificate_help '安装器未能完成或验证自动修复。你可以在钥匙串访问中处理。'
+    return 1
   fi
-  return "$repair_status"
+  if ! verify_result=$("$checker" --verify "$result"); then
+    print -ru2 -- "$verify_result"
+    show_certificate_help '当前登录账号未能验证集团 VPN 私钥的授权。你可以在钥匙串访问中检查。'
+    return 1
+  fi
+  print -r -- "$repair_result"
+  print -r -- '已通过当前登录账号复查集团 VPN 私钥权限。'
 }
 
 check_existing_installation() {
