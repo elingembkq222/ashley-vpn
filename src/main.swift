@@ -163,7 +163,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         process.standardError = worker ? output : FileHandle.nullDevice
         process.terminationHandler = { child in
             let raw = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            Task { @MainActor in completion(child.terminationStatus, raw) }
+            let status = child.terminationStatus
+            Task { @MainActor in completion(status, raw) }
         }
         do {
             try process.run()
