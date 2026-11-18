@@ -4,6 +4,7 @@ umask 022
 
 root=${0:A:h}
 source "$root/src/check-globalprotect.sh"
+source "$root/src/check-toolchain.zsh"
 source "$root/src/terminal-banner.zsh"
 target='/Applications/Ashley VPN.app'
 domain='com.ashley.vpn.companion'
@@ -235,6 +236,25 @@ if [[ "$major" != <-> ]] || (( major < 12 )); then
 fi
 install_message done "macOS $version"
 
+install_message info "必需工具链：Swift ≥ $ASHLEY_MIN_SWIFT_VERSION、macOS SDK ≥ $ASHLEY_MIN_MACOS_SDK_VERSION"
+toolchain_ready=false
+if toolchain_summary=$(ashley_check_active_toolchain); then
+  toolchain_ready=true
+elif [[ "$mode" != --check ]] && ashley_update_command_line_tools; then
+  install_message info '工具更新完成，正在重新检查 Swift 和 macOS SDK 版本…'
+  if toolchain_summary=$(ashley_check_active_toolchain); then
+    toolchain_ready=true
+  fi
+fi
+if [[ "$toolchain_ready" != true ]]; then
+  install_message info '首次安装命令行工具请运行 xcode-select --install。' >&2
+  install_message info '请在「系统设置 → 通用 → 软件更新」安装适配当前 macOS 的 Command Line Tools for Xcode 更新。' >&2
+  install_message info '如果使用完整 Xcode，请更新 Xcode，并在 Xcode「设置 → 位置 → Command Line Tools」选择新版。' >&2
+  install_message info '更新后运行 xcrun swiftc --version 和 xcrun --sdk macosx --show-sdk-version 确认，再重新安装。' >&2
+  fail_check 'Xcode 工具链未满足必需版本，尚未开始构建。'
+fi
+install_message done "$toolchain_summary"
+
 if [[ -z "${1:-}" ]]; then
   [[ -n "$latest_version" ]] || fail_check '无法读取安装包版本。'
 fi
@@ -246,12 +266,6 @@ if ! check_globalprotect 2>/dev/null; then
   fail_check '集团 GlobalProtect：客户端未安装或不完整，请通过公司渠道安装后重试。'
 fi
 install_message done '集团 GlobalProtect 已安装'
-
-if ! /usr/bin/xcrun --find swiftc >/dev/null 2>&1 ||
-   ! /usr/bin/xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1; then
-  fail_check 'Xcode 命令行工具：找不到 Swift 编译器或 macOS SDK，请运行 xcode-select --install 后重试。'
-fi
-install_message done 'Swift 编译器和 macOS SDK 可用'
 
 if [[ "${1:-}" == --check ]]; then
   check_application_directory

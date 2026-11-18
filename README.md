@@ -9,10 +9,23 @@ A macOS menu bar app for connecting to the company VPN through GlobalProtect.
 | ✅ | macOS 12 or later | Update macOS if needed. |
 | ✅ | Company GlobalProtect client | Install it through company IT. |
 | ✅ | Company VPN client certificate and private key (to connect) | Import the IT-issued certificate and private key into the System keychain. The private key needs access grants for `GlobalProtect`, `PanGPS`, and `com.apple.identity.export`. |
-| ✅ | Xcode Command Line Tools | Run `xcode-select --install` if the tools are missing. |
+| ✅ | Apple Swift **6.2.4 or later** and macOS SDK **26.2 or later** | Install or update Xcode Command Line Tools for your macOS. Both minimum versions are mandatory. |
 | ✅ | Write access to `/Applications` | Use a macOS account with permission to install apps there. |
 
 ## Install
+
+The installer checks the active Swift compiler and macOS SDK before building or changing Ashley VPN. If either mandatory version is missing, too old, or cannot be identified, it displays the detected versions and blocks the build. These checks also apply to `--check` and certificate repair modes.
+
+For an existing default Command Line Tools installation, an interactive terminal can offer an automatic update. The installer finds the latest eligible stable Command Line Tools package available from Apple, shows its name, and asks you to confirm. macOS requests administrator authorization through `sudo`; Ashley VPN does not read or store your password. Only that package is installed. Both versions are checked again before installation continues. Cancelling, authorization failure, an unavailable update, or versions still below the requirements stop the installation. `--check` never offers or performs updates. Full Xcode installations and custom toolchain selections need manual updates.
+
+If Command Line Tools are missing, run `xcode-select --install`. To update an existing installation, use **System Settings → General → Software Update**. If the active tools come from the full Xcode app, update Xcode and select the new version under **Xcode → Settings → Locations → Command Line Tools**. Install a release compatible with your macOS; update macOS first if necessary. Verify both versions before retrying:
+
+```sh
+xcrun swiftc --version
+xcrun --sdk macosx --show-sdk-version
+```
+
+Then install Ashley VPN:
 
 ```sh
 curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/bootstrap.sh' | bash
