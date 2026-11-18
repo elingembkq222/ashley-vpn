@@ -164,7 +164,7 @@ cancel_operation() {
   { read -r token pid action started < "$operation_owner"; } 2>/dev/null || return 3
   [[ -n "$1" && "$token" == "$1" ]] || return 3
   [[ -n "$pid" && "$pid" != *[^0-9]* && "$pid" -gt 1 ]] || return 2
-  case "$action" in toggle|connect|disconnect) ;; *) return 2 ;; esac
+  case "$action" in toggle|connect|disconnect|disconnect-keep-network) ;; *) return 2 ;; esac
   [[ -n "$started" && "$(process_start "$pid")" == "$started" ]] || return 3
   group=$(/bin/ps -p "$pid" -o pgid= | /usr/bin/awk '{$1=$1; if (NF) print}')
   command=$(/bin/ps -ww -p "$pid" -o command=)
@@ -211,14 +211,14 @@ if [[ "$1" == input ]]; then
   exit $?
 fi
 case "$1" in
-  toggle|connect|disconnect) ;;
+  toggle|connect|disconnect|disconnect-keep-network) ;;
   *) print -u2 -- '未知的 Ashley VPN 操作。'; exit 2 ;;
 esac
 if [[ -t 2 ]]; then
   prepare_terminal_banner
   case "$1" in
     connect) _gp-terminal-title '连接集团 VPN' ;;
-    disconnect) _gp-terminal-title '关闭集团 VPN' ;;
+    disconnect|disconnect-keep-network) _gp-terminal-title '关闭集团 VPN' ;;
     toggle) _gp-terminal-title '切换集团 VPN' ;;
   esac
 fi
@@ -249,5 +249,9 @@ case "$1" in
     ;;
   disconnect)
     gp-disconnect
+    ;;
+  disconnect-keep-network)
+    # Confirmed floating-orb exit must not start another Wi-Fi selection flow.
+    gp-stop
     ;;
 esac

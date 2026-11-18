@@ -537,7 +537,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         if state == .stopped {
             quit()
         } else {
-            run("disconnect", quitWhenFinished: true)
+            run("disconnect-keep-network", quitWhenFinished: true)
         }
     }
 
@@ -550,7 +550,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 
     private func run(_ action: String, quitWhenFinished: Bool = false) {
         guard !isTransitioning, !switchingCodexRoute else { return }
-        let disconnecting = action == "disconnect" || (action == "toggle" && state != .stopped)
+        let disconnecting = action == "disconnect" || action == "disconnect-keep-network" ||
+            (action == "toggle" && state != .stopped)
         workerRunning = true
         lastInput = nil
         pendingUntil = uptime + 4
