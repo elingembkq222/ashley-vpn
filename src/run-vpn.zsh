@@ -10,6 +10,7 @@ operation_progress="$ASHLEY_VPN_STATE/operation.progress"
 operation_input="$ASHLEY_VPN_STATE/operation.input"
 ASHLEY_VPN_INPUT='' ASHLEY_VPN_INPUT_MODE=''
 source "$ASHLEY_VPN_RESOURCES/terminal-banner.zsh" || exit 1
+source "$ASHLEY_VPN_RESOURCES/gp-processes.sh" || exit 1
 source "$ASHLEY_VPN_RESOURCES/globalprotect-control.zsh" || exit 1
 
 vpn_state() {
@@ -67,6 +68,7 @@ _gp-terminal-input() {
   ASHLEY_VPN_INPUT_MODE="$1"
   name=${ASHLEY_VPN_INPUT:t}
   case "$1" in
+    cancel-stop-system) _gp-gui-progress '正在取消，需在终端完成管理员验证' ;;
     *-system) _gp-gui-progress '请在终端完成管理员验证' ;;
     *) _gp-gui-progress '请在终端选择 Wi-Fi' ;;
   esac
@@ -113,7 +115,12 @@ _gp-cancel-input() {
   else
     /bin/kill -INT -- "$pid" 2>/dev/null
   fi
+  local deadline=$((SECONDS + 5))
   while [[ ! -f "$ASHLEY_VPN_INPUT/result" && "$(process_start "$pid")" == "$started" ]]; do
+    if (( SECONDS >= deadline )); then
+      print -ru2 -- '终端操作尚未结束，请结束终端输入后再关闭 GlobalProtect。'
+      return 1
+    fi
     /bin/sleep 0.25
   done
 }
@@ -141,7 +148,7 @@ _gp-run-input() {
     disconnect-wifi)
       _gp-disconnect-wifi
       ;;
-    stop-system)
+    stop-system|cancel-stop-system)
       _gp-terminal-title '关闭集团 VPN'
       _gp-authorize-stop
       ;;
@@ -175,6 +182,20 @@ cancel_operation() {
   script=${script%" $action"}
   [[ "${script:A}" == "$ASHLEY_VPN_RESOURCES/run-vpn.zsh" ]] || return 2
   /bin/kill -INT -- "-$pid"
+}
+
+finish_cancelled_operation() {
+  trap '' INT
+  _gp-cancel-input || exit 1
+  _gp-clear-input
+  local gpCancelling=1 gpProgressStep=''
+  _gp-gui-progress '正在取消并关闭 GlobalProtect'
+  if gp-stop; then
+    print -ru2 -- '已取消本次 VPN 操作，GlobalProtect 已停止。'
+    exit 130
+  fi
+  print -ru2 -- '操作已取消，但 GlobalProtect 未完全退出。请再次选择「断开 VPN」。'
+  exit 1
 }
 
 /bin/mkdir -p "$ASHLEY_VPN_STATE" || exit 1
@@ -233,15 +254,15 @@ started=$(process_start "$$")
 [[ -n "$started" ]] || exit 1
 token=$(/usr/bin/uuidgen) || exit 1
 trap '_gp-clear-input; /bin/rm -f -- "$operation_owner" "$operation_progress" "$operation_progress.$$" "$operation_input" "$operation_input.$$"' EXIT
-trap 'trap "" INT; _gp-cancel-input; print -u2 -- "已取消本次 VPN 操作。"; exit 130' INT
+trap finish_cancelled_operation INT
 print -r -- "$token $$ $1 $started" > "$operation_owner" || exit 1
 
 case "$1" in
   toggle)
-    if [[ "$(vpn_state)" == stopped ]]; then
-      connect_vpn
-    else
+    if [[ "$(vpn_state)" == connected ]]; then
       gp-disconnect
+    else
+      connect_vpn
     fi
     ;;
   connect)
@@ -255,3 +276,8 @@ case "$1" in
     gp-stop
     ;;
 esac
+operation_result=$?
+if (( operation_result == 130 )); then
+  finish_cancelled_operation
+fi
+exit "$operation_result"

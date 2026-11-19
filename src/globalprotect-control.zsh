@@ -125,6 +125,8 @@ _gp-authorize-stop() {
 _gp-stop-system-service() {
   emulate -L zsh
   local gpSystemJob="$1" gpOutput gpStatus
+  local gpInputMode=stop-system
+  [[ "$gpCancelling" != 1 ]] || gpInputMode=cancel-stop-system
   local gpHelper=/private/etc/ashley-vpn-stop
 
   gpOutput=$(LC_ALL=C /usr/bin/sudo -kn -- "$gpHelper" check 2>&1)
@@ -135,6 +137,9 @@ _gp-stop-system-service() {
       _gp-progress-run '正在停止 GlobalProtect 系统服务' /usr/bin/sudo -kn -- "$gpHelper" bootout ||
         ! /bin/launchctl print "$gpSystemJob" >/dev/null 2>&1 || return 1
     fi
+    if [[ "$2" == residual ]]; then
+      /usr/bin/sudo -kn -- "$gpHelper" kill-residual || return
+    fi
     return 0
   fi
   if (( gpStatus != 77 )) && [[ "$gpOutput" != 'sudo: a password is required' &&
@@ -143,7 +148,7 @@ _gp-stop-system-service() {
     return "$gpStatus"
   fi
   if [[ "$ASHLEY_VPN_BACKGROUND" == 1 && ! -t 0 ]]; then
-    _gp-terminal-input stop-system
+    _gp-terminal-input "$gpInputMode"
   else
     _gp-authorize-stop
   fi
@@ -152,7 +157,7 @@ _gp-stop-system-service() {
 _gp-already-stopped() {
   emulate -L zsh
   local gpGui="gui/$EUID" gpJob
-  if /usr/bin/pgrep -x 'PanGPS|GlobalProtect' >/dev/null; then
+  if [[ -n "$(_gp_processes)" ]]; then
     return 1
   fi
   for gpJob in "$gpGui/com.paloaltonetworks.gp.pangpa" "$gpGui/com.paloaltonetworks.gp.pangps" \
@@ -162,6 +167,16 @@ _gp-already-stopped() {
     fi
   done
   return 0
+}
+
+_gp-signal-user-processes() {
+  local gpSignal="$1" gpPid gpOwner
+  while read -r gpPid gpOwner; do
+    if [[ "$gpOwner" == "$EUID" ]] &&
+       _gp_processes | /usr/bin/grep -Fqx -- "$gpPid $gpOwner"; then
+      /bin/kill "-$gpSignal" "$gpPid" 2>/dev/null || true
+    fi
+  done < <(_gp_processes)
 }
 
 gp-stop() {
@@ -176,17 +191,18 @@ gp-stop() {
   fi
   [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '正在关闭 GlobalProtect'
   print -r -- '正在关闭 GlobalProtect…'
-  local gpGui="gui/$EUID"
+  local gpGui="gui/$EUID" gpStopStatus=0
   local gpSystemJob='system/com.paloaltonetworks.gp.pangpsd' gpSystemDisabled
   gpSystemDisabled=$(/bin/launchctl print-disabled system 2>/dev/null)
   # A disabled and unloaded system job needs no privileged changes.
-  if { [[ "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => disabled'* ]] &&
-       [[ "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => true'* ]]; } ||
+  if [[ -f /Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist &&
+        "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => disabled'* &&
+        "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => true'* ]] ||
      /bin/launchctl print "$gpSystemJob" >/dev/null 2>&1; then
-    _gp-stop-system-service "$gpSystemJob" || return
+    _gp-stop-system-service "$gpSystemJob" || gpStopStatus=$?
   fi
-  _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangpa" || return
-  _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangps" || return
+  _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangpa" || gpStopStatus=$?
+  _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangps" || gpStopStatus=$?
   local gpTarget gpBootout gpStep
   for gpTarget in \
     "$gpGui/com.paloaltonetworks.gp.pangpa" \
@@ -199,7 +215,7 @@ gp-stop() {
       _gp-progress-run "$gpStep" _gp-launchctl "$gpGui" bootout "$gpTarget"
       gpBootout=$?
       if (( gpBootout != 0 )) && /bin/launchctl print "$gpTarget" >/dev/null 2>&1; then
-        return "$gpBootout"
+        gpStopStatus=$gpBootout
       fi
     fi
   done
@@ -207,13 +223,26 @@ gp-stop() {
   # bootout can return before launchd completes teardown. Check all jobs and
   # processes together so a stopped VPN finishes as soon as cleanup completes.
   [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '正在确认 GlobalProtect 已退出'
-  local gpDeadline=$((SECONDS + 25))
+  local gpStart=$SECONDS gpDeadline=$((SECONDS + 25))
+  local gpSentTerm=0 gpSentKill=0
   while true; do
     if _gp-already-stopped; then
+      (( gpStopStatus == 0 || gpStopStatus == 130 )) || return "$gpStopStatus"
       print -- '关闭完成：VPN 已断开，GlobalProtect 已停止。'
       return 0
     fi
     (( SECONDS < gpDeadline )) || break
+    if (( !gpSentTerm && SECONDS - gpStart >= 2 )); then
+      gpSentTerm=1
+      _gp-signal-user-processes TERM
+    elif (( !gpSentKill && SECONDS - gpStart >= 4 )); then
+      gpSentKill=1
+      [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '正在结束残留的 GlobalProtect 进程'
+      _gp-signal-user-processes KILL
+      if (( gpStopStatus == 0 )) && _gp_processes | /usr/bin/awk '$2 == 0 { found=1 } END { exit !found }'; then
+        _gp-stop-system-service "$gpSystemJob" residual || gpStopStatus=$?
+      fi
+    fi
     /bin/sleep 0.25
   done
   gp-status
@@ -1053,9 +1082,12 @@ _gp-vpn-log-state() {
       } else if (line ~ /--Set state to Connection failed[[:space:]]*$/) {
         tunnel = 0
         state = "failed"
-      } else if (line ~ /--Set state to (Disconnected|Disconnecting|disabled)[[:space:]]*$/) {
+      } else if (line ~ /--Set state to Disconnecting[[:space:]]*$/) {
         tunnel = 0
-        state = "waiting"
+        state = "disconnecting"
+      } else if (line ~ /--Set state to (Disconnected|[Dd]isabled)[[:space:]]*$/) {
+        tunnel = 0
+        state = "disconnected"
       } else if (line ~ /--Set state to (Retrieving configuration|Discovering network)[[:space:]]*$/) {
         tunnel = 0
         state = "configuration"
@@ -1086,25 +1118,57 @@ _gp-vpn-current-state() {
   _gp-vpn-log-state "$gpPid" "$gpStarted" "${gpLogs[@]}"
 }
 
+_gp-request-vpn-connect() {
+  local gpAppExecutable="${ASHLEY_VPN_RESOURCES:h}/MacOS/ashley-vpn-menu"
+  [[ -x "$gpAppExecutable" ]] || return 4
+  "$gpAppExecutable" --connect-globalprotect "$1"
+}
+
 _gp-wait-vpn() {
   emulate -L zsh
   local gpTimeout="${1:-120}" gpStart="$SECONDS" gpElapsed gpState gpLast='' gpLabel
   local -a gpFrames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
   local gpStatus=1 gpLastTick=-10
+  local gpIdleSince=-1 gpNextPress=0 gpPressResult gpPrompt=prompt gpBlocked=0 gpManualHint=''
   [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]] ||
     print -r -- '正在等待 VPN 建立连接。如 GlobalProtect 弹出登录窗口，请在那里完成验证。'
   {
     while (( SECONDS - gpStart < gpTimeout )); do
       gpElapsed=$((SECONDS - gpStart))
-      gpState=$(_gp-vpn-current-state) || gpState=waiting
+      gpState=$(_gp-vpn-current-state) || gpState=unknown
+      if [[ "$gpState" == disconnected || "$gpState" == waiting ]]; then
+        (( gpIdleSince >= 0 )) || gpIdleSince=$gpElapsed
+        if (( !gpBlocked && gpElapsed - gpIdleSince >= 6 && gpElapsed >= gpNextPress )); then
+          _gp-request-vpn-connect "$gpPrompt"
+          gpPressResult=$?
+          gpPrompt=check
+          case "$gpPressResult" in
+            0)
+              gpBlocked=1
+              gpManualHint='已点击 GlobalProtect 的「连接」，正在等待隧道建立'
+              ;;
+            3)
+              gpNextPress=$((gpElapsed + 3))
+              gpManualHint='请允许 Ashley VPN 使用辅助功能，或在 GlobalProtect 点击「连接」'
+              ;;
+            *)
+              gpBlocked=1
+              gpManualHint='请在 GlobalProtect 点击「连接」'
+              ;;
+          esac
+        fi
+      else
+        gpIdleSince=-1
+      fi
       case "$gpState" in
         connected) gpStatus=0; break ;;
+        disconnecting) gpLabel='正在等待上一次 VPN 连接退出' ;;
         auth) gpLabel='正在等待身份验证' ;;
         configuration) gpLabel='正在获取配置并检测网络' ;;
         tunnel) gpLabel='正在建立 VPN 隧道' ;;
         verifying) gpLabel='正在确认 VPN 隧道状态' ;;
         failed) gpLabel='客户端报告连接失败，等待客户端重试' ;;
-        *) gpLabel='正在等待 GlobalProtect 连接' ;;
+        *) gpLabel="${gpManualHint:-正在等待 GlobalProtect 连接}" ;;
       esac
       if [[ "$ASHLEY_VPN_BACKGROUND" == 1 ]]; then
         _gp-gui-progress "$gpLabel" "$((gpTimeout - gpElapsed))"
@@ -1124,7 +1188,11 @@ _gp-wait-vpn() {
     print -r -- "VPN 已连接，隧道已建立（等待 $((SECONDS - gpStart)) 秒）。"
     return 0
   fi
-  print -ru2 -- "等待 ${gpTimeout} 秒后仍未确认 VPN 隧道建立。请在 GlobalProtect 查看连接或登录状态。"
+  if [[ -n "$gpManualHint" && "$gpState" == (waiting|disconnected) ]]; then
+    print -ru2 -- "等待 ${gpTimeout} 秒后仍未连接。$gpManualHint。"
+  else
+    print -ru2 -- "等待 ${gpTimeout} 秒后仍未确认 VPN 隧道建立。请在 GlobalProtect 查看连接或登录状态。"
+  fi
   return 1
 }
 
