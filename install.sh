@@ -205,7 +205,10 @@ check_existing_installation() {
       installed_build=''
     if [[ "$installed_version" == "$latest_version" && "$installed_build" == "$latest_build" &&
           -x "$target/Contents/MacOS/ashley-vpn-menu" ]]; then
-      installed_current=true
+      if [[ -z "${ASHLEY_SIGN_IDENTITY:-}${ASHLEY_HOST_PROFILE:-}${ASHLEY_PROVIDER_PROFILE:-}" ||
+            -d "$target/Contents/Library/SystemExtensions/com.ashley.vpn.companion.routing.systemextension" ]]; then
+        installed_current=true
+      fi
     fi
   fi
 }
@@ -326,7 +329,7 @@ app="$stage/Ashley VPN.app"
 resources="$app/Contents/Resources"
 /bin/mkdir -p "$resources" "$app/Contents/MacOS"
 /bin/cp "$root/src/Info.plist" "$app/Contents/Info.plist"
-/bin/cp "$root/src/"{connect.command,disconnect.command,toggle.command,run-vpn.zsh,check-globalprotect.sh,gp-processes.sh,globalprotect-control.zsh,setup-stop-authorization.sh,terminal-banner.zsh,libcyber-node-route.zsh} "$resources/"
+/bin/cp "$root/src/"{connect.command,disconnect.command,toggle.command,run-vpn.zsh,check-globalprotect.sh,gp-processes.sh,globalprotect-control.zsh,setup-stop-authorization.sh,terminal-banner.zsh} "$resources/"
 /bin/cp "$root/src/assets/"{AppIcon.icns,MenuIcon.png,MenuIcon@2x.png,MenuIconDisabled.png,MenuIconDisabled@2x.png,FloatingIcon.png,FloatingIconDisabled.png} "$resources/"
 /bin/chmod 755 "$resources/"{connect,disconnect,toggle}.command
 /usr/bin/uuidgen > "$resources/installation-id"
@@ -334,11 +337,19 @@ resources="$app/Contents/Resources"
 run_build_step '正在构建 Ashley VPN…' '构建 Ashley VPN 主程序失败' /usr/bin/xcrun swiftc -target "$swift_target" -parse-as-library -O \
   "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" \
   "$root/src/WiFiScan.swift" "$root/src/CodexProxyStatus.swift" "$root/src/GlobalProtectConnect.swift" \
-  "$root/src/LibCyberEgress.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
+  "$root/src/TransparentRouting.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
 run_build_step '正在构建钥匙串组件…' '构建钥匙串组件失败' /usr/bin/xcrun swiftc -target "$swift_target" -O \
   "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
 run_build_step '正在构建证书权限组件…' '构建集团 VPN 证书权限组件失败' compile_certificate_checker
-run_build_step '正在签名 Ashley VPN…' '签名 Ashley VPN 失败' /usr/bin/codesign --force --deep --sign - "$app"
+if [[ -n "${ASHLEY_SIGN_IDENTITY:-}${ASHLEY_HOST_PROFILE:-}${ASHLEY_PROVIDER_PROFILE:-}" ]]; then
+  run_build_step '正在构建并签名 Codex 网络扩展…' '签名网络扩展失败' /bin/zsh -f "$root/src/sign-routing.zsh" "$app"
+else
+  if [[ -d "$target/Contents/Library/SystemExtensions" ]]; then
+    fail_check '升级已有网络扩展需要签名构建。'
+  fi
+  install_message info '本地临时签名版本仅提供集团 VPN 功能，Codex 分流需要签名版网络扩展。'
+  run_build_step '正在签名 Ashley VPN…' '签名 Ashley VPN 失败' /usr/bin/codesign --force --deep --sign - "$app"
+fi
 run_build_step '正在验证应用签名…' '验证 Ashley VPN 签名失败' /usr/bin/codesign --verify --deep --strict "$app"
 install_message done '应用构建和签名验证完成'
 /bin/zsh -f "$root/src/install-cli.zsh"
@@ -368,10 +379,6 @@ if [[ -d "$stage/previous.app" ]]; then
       /bin/rm -- "$state/$file" || print -ru2 -- '部分旧安装状态未能删除。'
     fi
   done
-  if /usr/bin/defaults read "$domain" >/dev/null 2>&1 &&
-     ! /usr/bin/defaults delete "$domain"; then
-    print -ru2 -- '旧版本应用设置未能删除。'
-  fi
 fi
 
 previous_keychain="$stage/previous.app/Contents/Resources/wifi-keychain"

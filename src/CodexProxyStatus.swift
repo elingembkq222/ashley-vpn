@@ -55,14 +55,47 @@ enum CodexProxyStatus {
                services.values.contains(where: { $0.name.caseInsensitiveCompare(route.name) == .orderedSame }) {
                 continue
             }
-            proxies[route.id] = route
+            if route.id == "proxy:com.libcyber.pirate", let listener = libCyberListener() {
+                proxies[route.id] = listener
+            } else {
+                proxies[route.id] = route
+            }
         }
         if let savedProxy, checked.insert(savedProxy).inserted,
            let route = localProxyRoute(savedProxy), proxies[route.id] == nil {
             proxies[route.id] = route
         }
+        let libCyberID = "proxy:com.libcyber.pirate"
+        if proxies[libCyberID] == nil,
+           let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.libcyber.pirate") {
+            proxies[libCyberID] = Route(id: libCyberID, name: appURL.deletingPathExtension().lastPathComponent,
+                                        kind: .runningClient(supportsSystemProxy: true))
+        }
         return (Array(proxies.values) + services.values).sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private static func libCyberListener() -> Route? {
+        let config = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/pirate/config.yaml")
+        guard let contents = try? String(contentsOf: config, encoding: .utf8) else { return nil }
+        return libCyberProxyURLs(contents).lazy.compactMap(localProxyRoute).first { $0.id == "proxy:com.libcyber.pirate" }
+    }
+
+    static func libCyberProxyURLs(_ config: String) -> [URL] {
+        var ports: [String: UInt16] = [:]
+        for line in config.split(whereSeparator: \.isNewline) {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<colon])
+            guard ["port", "mixed-port", "socks-port"].contains(key) else { continue }
+            let value = line[line.index(after: colon)...].prefix { $0 != "#" }.trimmingCharacters(in: .whitespaces)
+            if let port = UInt16(value), port > 0 { ports[key] = port }
+        }
+        return ["port", "mixed-port", "socks-port"].compactMap { key in
+            guard let port = ports[key] else { return nil }
+            let scheme = key == "socks-port" ? "socks5h" : "http"
+            return URL(string: "\(scheme)://127.0.0.1:\(port)")
         }
     }
 
@@ -148,7 +181,7 @@ enum CodexProxyStatus {
         }.first
     }
 
-    private static func localProxyRoute(_ url: URL) -> Route? {
+    static func localProxyRoute(_ url: URL) -> Route? {
         guard let endpoint = loopbackEndpoint(url),
               let snapshot = output("/usr/sbin/lsof", ["-nP", "-iTCP@\(endpoint)", "-sTCP:LISTEN", "-Fp"])
         else { return nil }
@@ -201,7 +234,7 @@ enum CodexProxyStatus {
         return (id: "proxy:" + identifier, name: name)
     }
 
-    private static func localProxyURLs() -> [URL] {
+    static func localProxyURLs() -> [URL] {
         guard let settings = SCDynamicStoreCopyProxies(nil) as? [String: Any] else { return [] }
         let kinds = [
             ("http", kSCPropNetProxiesHTTPSEnable, kSCPropNetProxiesHTTPSProxy, kSCPropNetProxiesHTTPSPort),
@@ -278,7 +311,7 @@ enum CodexProxyStatus {
         return routed
     }
 
-    private static func vpnService(_ id: String) -> String? {
+    static func vpnService(_ id: String) -> String? {
         guard id.hasPrefix("vpn:"), let service = normalizedVPNService(String(id.dropFirst(4))) else { return nil }
         return UUID(uuidString: service)?.uuidString ?? service
     }
