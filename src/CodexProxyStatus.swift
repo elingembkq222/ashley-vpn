@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Darwin
 import CFNetwork
 import SystemConfiguration
@@ -8,6 +8,7 @@ enum CodexProxyStatus {
         enum Kind: Equatable, Sendable {
             case localProxy(url: URL)
             case systemVPN(available: Bool)
+            case runningClient(supportsSystemProxy: Bool)
         }
 
         let id: String
@@ -33,9 +34,8 @@ enum CodexProxyStatus {
 
     static func routes(savedProxy: URL?) -> [Route] {
         var proxies: [String: Route] = [:]
-        let urls = localProxyURLs() + [savedProxy].compactMap { $0 }
         var checked = Set<URL>()
-        for url in urls where checked.insert(url).inserted {
+        for url in localProxyURLs() where checked.insert(url).inserted {
             if let proxy = localProxyRoute(url), proxies[proxy.id] == nil {
                 proxies[proxy.id] = proxy
             }
@@ -47,9 +47,57 @@ enum CodexProxyStatus {
             let kind = services[service.id]?.kind ?? service.kind
             services[service.id] = Route(id: service.id, name: service.name, kind: kind)
         }
+        for app in NSWorkspace.shared.runningApplications where !app.isTerminated {
+            guard let identifier = app.bundleIdentifier, let url = app.bundleURL, let name = app.localizedName,
+                  let route = runningClient(identifier: identifier, name: name, url: url),
+                  proxies[route.id] == nil else { continue }
+            if case .runningClient(false) = route.kind,
+               services.values.contains(where: { $0.name.caseInsensitiveCompare(route.name) == .orderedSame }) {
+                continue
+            }
+            proxies[route.id] = route
+        }
+        if let savedProxy, checked.insert(savedProxy).inserted,
+           let route = localProxyRoute(savedProxy), proxies[route.id] == nil {
+            proxies[route.id] = route
+        }
         return (Array(proxies.values) + services.values).sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+    }
+
+    static func runningClient(identifier: String, name: String, url: URL) -> Route? {
+        guard url.pathExtension.lowercased() == "app", !name.isEmpty,
+              identifier != "com.ashley.vpn.companion", !isGlobalProtect("\(identifier) \(name)") else { return nil }
+        let proxyClients: Set<String> = [
+            "com.libcyber.pirate", "com.west2online.clashx", "com.west2online.clashxpro",
+            "com.nssurge.surge-mac", "io.github.clash-verge-rev.clash-verge-rev",
+            "com.clashverge-rev.clash-verge-rev", "com.yanue.v2rayu", "com.qiuyuzhou.shadowsocksx-ng"
+        ]
+        let supportsProxy = proxyClients.contains(identifier.lowercased())
+        let legacyTunnelClients = ["net.tunnelblick.tunnelblick", "com.viscosityvpn.viscosity"]
+        guard supportsProxy || name.localizedCaseInsensitiveContains("VPN")
+                || legacyTunnelClients.contains(identifier.lowercased()) || hasTunnelProvider(url) else { return nil }
+        return Route(id: "proxy:" + identifier, name: name, kind: .runningClient(supportsSystemProxy: supportsProxy))
+    }
+
+    private static func hasTunnelProvider(_ app: URL) -> Bool {
+        let providerTypes = ["com.apple.networkextension.packet-tunnel", "com.apple.networkextension.app-proxy"]
+        for directory in ["Contents/PlugIns", "Contents/Library/SystemExtensions"] {
+            let entries = (try? FileManager.default.contentsOfDirectory(at: app.appendingPathComponent(directory),
+                                                                         includingPropertiesForKeys: nil)) ?? []
+            for entry in entries where ["appex", "systemextension"].contains(entry.pathExtension) {
+                guard let bundle = Bundle(url: entry) else { continue }
+                let appExtension = bundle.object(forInfoDictionaryKey: "NSExtension") as? [String: Any]
+                if let type = appExtension?["NSExtensionPointIdentifier"] as? String, providerTypes.contains(type) {
+                    return true
+                }
+                let networkExtension = bundle.object(forInfoDictionaryKey: "NetworkExtension") as? [String: Any]
+                if let classes = networkExtension?["NEProviderClasses"] as? [String: Any],
+                   providerTypes.contains(where: { classes[$0] != nil }) { return true }
+            }
+        }
+        return false
     }
 
     static func configuredVPNRoutes() -> [Route] {
