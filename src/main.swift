@@ -16,7 +16,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private var selectedRoute: CodexProxyStatus.Selection?
     private var proxyRoutes: [CodexProxyStatus.Route] = []
     private var proxyCheck: Task<Void, Never>?
-    private var lastProxyCheck: TimeInterval?
+    private var proxyTimer: Timer?
     private var groupWasConnected = false
     private var groupLossObservedAt: TimeInterval?
     private var pendingCodexHandoff = false
@@ -70,6 +70,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         item.menu = makeMenu()
         updateDisplay()
         refreshStatus()
+        refreshCodexProxy()
+        proxyTimer = makeTimer(interval: 60) { [weak self] in self?.refreshCodexProxy() }
         setStatusCadence(terminalInputActive: false)
     }
 
@@ -96,7 +98,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         if let orb {
             addItem(orb.isVisible ? "隐藏浮标" : "显示浮标", action: #selector(toggleOrb), to: menu)
         }
-        addItem("退出", action: #selector(quit), to: menu)
+        addItem("退出", action: #selector(confirmOrbExit), to: menu)
         return menu
     }
 
@@ -174,7 +176,6 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     }
 
     private func refreshStatus() {
-        refreshCodexProxy()
         guard !readingStatus else { return }
         readingStatus = true
         runMonitor(["status"]) { [weak self] code, raw in
@@ -197,7 +198,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
                 self.progressStep = self.busy && lines.count > 3 && !lines[3].isEmpty ? lines[3] : nil
                 self.progressRemaining = self.busy && lines.count > 4 ? Int(lines[4]) : nil
                 self.setStatusCadence(terminalInputActive: self.activeOperation != nil && lines.count > 2 && !lines[2].isEmpty)
-                if let token = self.activeOperation, lines.count > 2, self.cancellation == nil {
+                if let token = self.activeOperation, lines.count > 2,
+                   self.cancellation == nil || lines[2].hasPrefix("cancel-stop-system ") {
                     self.openInput(lines[2], token: token)
                 }
             } else {
@@ -218,9 +220,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     }
 
     private func refreshCodexProxy() {
-        guard proxyCheck == nil,
-              uptime - (lastProxyCheck ?? -.infinity) >= 5 else { return }
-        lastProxyCheck = uptime
+        guard proxyCheck == nil else { return }
         let savedProxy = selectedRoute?.proxyURL
         proxyCheck = Task { [weak self] in
             let routes = await Task.detached(priority: .utility) {
@@ -237,7 +237,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private func resetProxyCheck() {
         proxyCheck?.cancel()
         proxyCheck = nil
-        lastProxyCheck = nil
+        refreshCodexProxy()
     }
 
     private func updateProxyMenu() {
@@ -462,7 +462,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         let statusText: String
         let countdown = isTransitioning && cancellation == nil ? progressRemaining : nil
         if cancellation != nil {
-            statusText = "正在取消本次 VPN 操作"
+            statusText = progress.isEmpty ? "正在取消本次 VPN 操作" : progress
         } else if isTransitioning {
             statusText = progress.isEmpty ? "正在切换集团 VPN" : progress
         } else if uptime < feedbackUntil {
@@ -470,7 +470,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         } else {
             switch state {
             case .connected: statusText = "集团 VPN 已连接，单击桌面图标关闭"
-            case .running: statusText = "GlobalProtect 正在运行，单击桌面图标关闭"
+            case .running: statusText = "GlobalProtect 正在运行，单击桌面图标连接"
             case .stopped: statusText = "集团 VPN 已关闭，单击桌面图标开启"
             }
         }
@@ -530,15 +530,11 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 
     @objc private func connect() { run("connect") }
     @objc private func disconnect() { run("disconnect") }
-    @objc private func quit() { NSApp.terminate(nil) }
+    private func quit() { NSApp.terminate(nil) }
 
-    private func confirmOrbExit() {
+    @objc private func confirmOrbExit() {
         guard hasVPNStatus, !isTransitioning, !switchingCodexRoute else { return }
-        if state == .stopped {
-            quit()
-        } else {
-            run("disconnect-keep-network", quitWhenFinished: true)
-        }
+        run("disconnect-keep-network", quitWhenFinished: true)
     }
 
     @objc private func toggleOrb() {
@@ -551,7 +547,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private func run(_ action: String, quitWhenFinished: Bool = false) {
         guard !isTransitioning, !switchingCodexRoute else { return }
         let disconnecting = action == "disconnect" || action == "disconnect-keep-network" ||
-            (action == "toggle" && state != .stopped)
+            (action == "toggle" && state == .connected)
         workerRunning = true
         lastInput = nil
         pendingUntil = uptime + 4
@@ -567,7 +563,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             self.progress = ""
             self.progressStep = nil
             self.progressRemaining = nil
-            let cancelled = code == 130 || (code != 0 && self.cancellation != nil)
+            let cancelled = code == 130
             if code == 0 {
                 self.feedback = raw.contains("VPN 已连接") ? "集团 VPN 已连接" : "集团 VPN 已关闭"
                 self.feedbackTone = .success
@@ -587,7 +583,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private func openInput(_ request: String, token: String) {
         let parts = request.split(separator: " ").map(String.init)
         guard parts.count == 2,
-              ["connect-wifi", "connect-wifi-reset", "disconnect-wifi", "stop-system", "start-system"].contains(parts[0]),
+              ["connect-wifi", "connect-wifi-reset", "disconnect-wifi", "stop-system", "cancel-stop-system", "start-system"].contains(parts[0]),
               parts[1].hasPrefix("input.\(token)."),
               parts[1].range(of: #"^input\.[a-fA-F0-9-]+\.[a-zA-Z0-9]+$"#, options: .regularExpression) != nil,
               lastInput != parts[1],
@@ -641,6 +637,9 @@ struct Main {
                 _ = execv(command[0], base)
             }
             exit(1)
+        }
+        if arguments.count == 3, arguments[1] == "--connect-globalprotect" {
+            exit(GlobalProtectConnect.pressConnect(promptForAccess: arguments[2] == "prompt"))
         }
         if arguments.count == 4, arguments[1] == "--scan-wifi" {
             WiFiScan.run(interfaceName: arguments[2], outputPath: arguments[3])
