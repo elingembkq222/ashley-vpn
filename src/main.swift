@@ -265,6 +265,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
                 title = route.name
             case .systemVPN(let available):
                 title = "\(route.name) · \(available ? "系统 VPN" : "当前不可用")"
+            case .runningClient(let supportsProxy):
+                title = "\(route.name) · \(supportsProxy ? "已启动，待启用系统代理" : "已启动")"
             }
             let item = addItem(title, action: #selector(selectCodexProxy(_:)), to: menu)
             item.representedObject = route.id
@@ -272,6 +274,9 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             item.state = route.id == selectedRoute?.id ? .on : .off
             if case .localProxy = route.kind {
                 item.toolTip = "本机代理须设为 macOS 系统代理"
+            } else if case .runningClient(false) = route.kind {
+                item.isEnabled = false
+                item.toolTip = "请在此客户端中管理连接"
             } else if case .systemVPN(false) = route.kind {
                 item.isEnabled = false
                 item.toolTip = "请在当前网络位置启用此 VPN"
@@ -349,7 +354,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     }
 
     private func applyCodexRoute(_ selection: CodexProxyStatus.Selection?) async -> (success: Bool, message: String) {
-        let desiredVPN = selection?.proxyURL == nil ? selection?.id : nil
+        let desiredVPN = selection.flatMap { $0.id.hasPrefix("vpn:") ? $0.id : nil }
         if let desiredVPN,
            let route = proxyRoutes.first(where: { $0.id == desiredVPN }), case .systemVPN(false) = route.kind {
             return (false, "请在当前网络位置启用 \(route.name)")
@@ -364,7 +369,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             }
             defaults.removeObject(forKey: "startedCodexVPN")
         }
-        if let selection, selection.proxyURL != nil {
+        if let selection, selection.id.hasPrefix("proxy:") {
             let result = await Task.detached(priority: .utility) {
                 for attempt in 0..<3 {
                     if let route = CodexProxyStatus.systemProxyForCodex(), route.id == selection.id,

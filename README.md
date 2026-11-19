@@ -43,7 +43,7 @@ Choose **退出** in the menu bar or confirm after double-clicking the floating 
 
 During a connection requested in Ashley VPN, a running but disconnected GlobalProtect client may need its **Connect** button pressed. Ashley VPN can press it with macOS Accessibility permission. Approve **Ashley VPN** under System Settings → Privacy & Security → Accessibility when prompted. Complete any sign-in or MFA in GlobalProtect.
 
-Ashley VPN scans macOS VPN profiles and local proxy routes at startup and every minute. In the menu bar, choose a route under **Codex 流量**. Ashley VPN remembers the selection and checks it after the company VPN disconnects. Choose **无** to use your normal network settings. Ashley VPN leaves the running Codex process open.
+Ashley VPN scans running VPN clients, macOS VPN profiles and local proxy routes at startup and every minute. **Codex 流量** shows recognized running proxy clients such as LibCyber Desktop even when their system proxy is off. Enable the client's system proxy to use it for Codex. Tunnel clients without a matching controllable profile are listed for reference. Ashley VPN remembers the selected route and checks it after the company VPN disconnects. Choose **无** to use your normal network settings. Ashley VPN leaves the running Codex process open.
 
 When the company VPN is connected and LibCyber is selected, Ashley VPN tests the configured system proxy. If LibCyber reports an IPv4 node connection failure for that test, authorize the Wi-Fi host route for that node in Terminal. The route follows the Wi-Fi gateway while Ashley VPN is running and removes itself when you deselect LibCyber or disconnect from the company VPN. A different node may require its own authorization.
 
