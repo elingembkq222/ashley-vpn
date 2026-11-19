@@ -43,7 +43,9 @@ Choose **退出** in the menu bar or confirm after double-clicking the floating 
 
 During a connection requested in Ashley VPN, a running but disconnected GlobalProtect client may need its **Connect** button pressed. Ashley VPN can press it with macOS Accessibility permission. Approve **Ashley VPN** under System Settings → Privacy & Security → Accessibility when prompted. Complete any sign-in or MFA in GlobalProtect.
 
-Ashley VPN scans macOS VPN profiles and local proxy routes at startup and every minute. In the menu bar, choose a fallback under **Codex 流量**. Ashley VPN remembers the selection and checks the route after the company VPN disconnects. Choose **无** to leave routing to your normal network settings. Ashley VPN leaves the running Codex process open.
+Ashley VPN scans macOS VPN profiles and local proxy routes at startup and every minute. In the menu bar, choose a route under **Codex 流量**. Ashley VPN remembers the selection and checks it after the company VPN disconnects. Choose **无** to use your normal network settings. Ashley VPN leaves the running Codex process open.
+
+When the company VPN is connected and LibCyber is selected, Ashley VPN tests the configured system proxy. If LibCyber reports an IPv4 node connection failure for that test, authorize the Wi-Fi host route for that node in Terminal. The route follows the Wi-Fi gateway while Ashley VPN is running and removes itself when you deselect LibCyber or disconnect from the company VPN. A different node may require its own authorization.
 
 For LibCyber or another local proxy, enable **System Proxy** in that app. In Codex, add `respect_system_proxy = true` under `[features]` in `~/.codex/config.toml`. Codex reads this option the next time you open it. Ashley VPN checks the effective macOS proxy for `chatgpt.com`. A macOS VPN uses the routes from its system profile and can affect other apps on the Mac.
 

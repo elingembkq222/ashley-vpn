@@ -188,12 +188,18 @@ enum CodexProxyStatus {
     }
 
     static func proxyIsReachable(_ url: URL) -> Bool {
-        guard loopbackEndpoint(url) != nil else { return false }
-        let status = output("/usr/bin/curl", ["-q", "--silent", "--noproxy", "", "--proxy", url.absoluteString,
+        probeProxy(url).reachable
+    }
+
+    static func probeProxy(_ url: URL) -> (reachable: Bool, port: UInt16?) {
+        guard loopbackEndpoint(url) != nil else { return (false, nil) }
+        let fields = output("/usr/bin/curl", ["-q", "--silent", "--noproxy", "", "--proxy", url.absoluteString,
                                               "--connect-timeout", "4", "--max-time", "6", "--output", "/dev/null",
-                                              "--write-out", "%{http_code}",
-                                              "https://chatgpt.com/backend-api/codex/responses"])
-        return status == "405" || status == "401"
+                                              "--write-out", "%{http_code} %{local_port}",
+                                              "https://chatgpt.com/backend-api/codex/responses"],
+                            includeFailedOutput: true)?.split(separator: " ") ?? []
+        let port = fields.count == 2 ? UInt16(fields[1]) : nil
+        return (fields.first == "405" || fields.first == "401", port.flatMap { $0 == 0 ? nil : $0 })
     }
 
     static func vpnStatus(_ id: String) -> String? {
@@ -241,7 +247,7 @@ enum CodexProxyStatus {
         return value.contains("globalprotect") || value.contains("paloaltonetworks") || value.contains("集团vpn")
     }
 
-    private static func output(_ executable: String, _ arguments: [String]) -> String? {
+    private static func output(_ executable: String, _ arguments: [String], includeFailedOutput: Bool = false) -> String? {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -257,7 +263,7 @@ enum CodexProxyStatus {
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
+        guard process.terminationStatus == 0 || includeFailedOutput else { return nil }
         return String(decoding: data, as: UTF8.self)
     }
 
