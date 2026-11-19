@@ -15,6 +15,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private let defaults = UserDefaults.standard
     private var selectedRoute: CodexProxyStatus.Selection?
     private var proxyRoutes: [CodexProxyStatus.Route] = []
+    private let libCyberEgress = LibCyberEgress()
     private var proxyCheck: Task<Void, Never>?
     private var proxyTimer: Timer?
     private var groupWasConnected = false
@@ -215,6 +216,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             }
             self.updateDisplay()
             self.cancelWhenReady()
+            if self.hasVPNStatus && !self.isTransitioning { self.refreshLibCyberEgress() }
             self.finishGroupDisconnect()
         }
     }
@@ -242,7 +244,6 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
 
     private func updateProxyMenu() {
         guard let menuCodexProxy else { return }
-        menuCodexProxy.toolTip = "选择集团 VPN 断开后使用的线路"
         let menu = NSMenu()
         menu.autoenablesItems = false
         if let codexRouteStatus {
@@ -297,12 +298,17 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             defaults.removeObject(forKey: "codexRoute")
             selectedRoute = nil
         }
-        codexRouteStatus = "将在集团 VPN 断开后应用"
+        codexRouteStatus = selectedRoute?.id == LibCyberEgress.routeID ? nil : "将在集团 VPN 断开后应用"
+        if hasVPNStatus && !isTransitioning { refreshLibCyberEgress(force: true) }
         updateProxyMenu()
         if hasVPNStatus && state != .connected && !isTransitioning {
             pendingCodexHandoff = true
             finishGroupDisconnect()
         }
+    }
+
+    private func refreshLibCyberEgress(force: Bool = false) {
+        libCyberEgress.refresh(connected: state == .connected, selection: selectedRoute, force: force)
     }
 
     private func finishGroupDisconnect() {
