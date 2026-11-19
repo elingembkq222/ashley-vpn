@@ -203,6 +203,12 @@ check_existing_installation() {
       installed_version='未知版本'
     installed_build=$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$target/Contents/Info.plist" 2>/dev/null) ||
       installed_build=''
+    if [[ "$installed_version" == <->.<->.<-> && "$installed_build" == <-> && -n "$latest_build" ]]; then
+      autoload -Uz is-at-least
+      if ! is-at-least "$installed_version.$installed_build" "$latest_version.$latest_build"; then
+        fail_check "本机 $installed_version（构建 $installed_build）高于安装包 $latest_version（构建 $latest_build），已保留本机版本。"
+      fi
+    fi
     if [[ "$installed_version" == "$latest_version" && "$installed_build" == "$latest_build" &&
           -x "$target/Contents/MacOS/ashley-vpn-menu" ]]; then
       if [[ -z "${ASHLEY_SIGN_IDENTITY:-}${ASHLEY_HOST_PROFILE:-}${ASHLEY_PROVIDER_PROFILE:-}" ||
@@ -226,6 +232,9 @@ fi
 swift_target="$(/usr/bin/uname -m)-apple-macos12.0"
 release_fields=$(ashley_release_fields "$root/src/Info.plist") || release_fields=''
 read -r latest_version latest_build <<< "$release_fields"
+if [[ -z "$mode" || "$mode" == --check ]]; then
+  check_existing_installation "$mode"
+fi
 if [[ "${ASHLEY_VPN_ONLINE_INSTALL:-}" == 1 && -n "$release_fields" ]]; then
   version_status='已是最新版'
 else
@@ -261,9 +270,6 @@ install_message done "$toolchain_summary"
 
 if [[ -z "${1:-}" ]]; then
   [[ -n "$latest_version" ]] || fail_check '无法读取安装包版本。'
-fi
-if [[ -z "$mode" || "$mode" == --check ]]; then
-  check_existing_installation "$mode"
 fi
 
 if ! check_globalprotect 2>/dev/null; then
