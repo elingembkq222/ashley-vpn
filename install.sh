@@ -343,7 +343,7 @@ resources="$app/Contents/Resources"
 run_build_step '正在构建 Ashley VPN…' '构建 Ashley VPN 主程序失败' /usr/bin/xcrun swiftc -target "$swift_target" -parse-as-library -O \
   "$root/src/main.swift" "$root/src/FloatingOrb.swift" "$root/src/TerminalSession.swift" \
   "$root/src/WiFiScan.swift" "$root/src/CodexProxyStatus.swift" "$root/src/GlobalProtectConnect.swift" \
-  "$root/src/TransparentRouting.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
+  "$root/src/TransparentRouting.swift" "$root/src/DomainRouting.swift" -o "$app/Contents/MacOS/ashley-vpn-menu"
 run_build_step '正在构建钥匙串组件…' '构建钥匙串组件失败' /usr/bin/xcrun swiftc -target "$swift_target" -O \
   "$root/src/wifi-keychain.swift" -o "$resources/wifi-keychain"
 run_build_step '正在构建证书权限组件…' '构建集团 VPN 证书权限组件失败' compile_certificate_checker
@@ -353,7 +353,7 @@ else
   if [[ -d "$target/Contents/Library/SystemExtensions" ]]; then
     fail_check '升级已有网络扩展需要签名构建。'
   fi
-  install_message info '本地临时签名版本仅提供集团 VPN 功能，Codex 分流需要签名版网络扩展。'
+  install_message info '本地构建使用 macOS 域名代理分流 ChatGPT、Codex 和 OpenAI。'
   run_build_step '正在签名 Ashley VPN…' '签名 Ashley VPN 失败' /usr/bin/codesign --force --deep --sign - "$app"
 fi
 run_build_step '正在验证应用签名…' '验证 Ashley VPN 签名失败' /usr/bin/codesign --verify --deep --strict "$app"
@@ -363,7 +363,7 @@ install_message done '应用构建和签名验证完成'
 # Uninstall the old bundle only after the new one is ready.
 if [[ -d "$target" ]]; then
   install_message info '正在替换旧版 Ashley VPN…'
-  process='^/Applications/Ashley VPN\.app/Contents/MacOS/ashley-vpn-menu$'
+  process='^/Applications/Ashley VPN\.app/Contents/MacOS/ashley-vpn-menu( --open-routed-codex)?$'
   /usr/bin/pkill -TERM -u "$EUID" -f "$process" || true
   for attempt in {1..20}; do
     /usr/bin/pgrep -u "$EUID" -f "$process" >/dev/null || break

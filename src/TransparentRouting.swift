@@ -10,25 +10,41 @@ final class TransparentRouting: NSObject, OSSystemExtensionRequestDelegate {
     private var message = "Codex 使用默认线路"
     private var configured = false
 
+    let usesDomainRules = !FileManager.default.fileExists(atPath: Bundle.main.bundleURL
+        .appendingPathComponent("Contents/Library/SystemExtensions/\(providerID).systemextension").path)
+    private var appliedScript: String?
+    private var lastServices = Set<String>()
+
     var needsReconnect: Bool {
-        configured && manager?.connection.status == .disconnected
+        if usesDomainRules {
+            return lastServices != DomainRouting.primaryServices()
+                || (appliedScript != nil && DomainRouting.effectiveScript() != appliedScript)
+        }
+        return configured && manager?.connection.status == .disconnected
     }
 
-    var policyActive: Bool { configured && manager?.connection.status == .connected }
+    var policyActive: Bool {
+        usesDomainRules ? appliedScript != nil && DomainRouting.effectiveScript() == appliedScript
+                        : configured && manager?.connection.status == .connected
+    }
+
+    var networkServiceChanged: Bool { usesDomainRules && lastServices != DomainRouting.primaryServices() }
 
     var status: String {
+        if usesDomainRules, appliedScript != nil && !policyActive { return "当前网络尚未采用域名代理" }
         if configured && manager?.connection.status != .connected { return "Codex 分流扩展未连接" }
         return message
     }
 
     func apply(_ selection: CodexProxyStatus.Selection?) async {
         configured = false
-        let embedded = Bundle.main.bundleURL.appendingPathComponent("Contents/Library/SystemExtensions/\(Self.providerID).systemextension")
-        guard FileManager.default.fileExists(atPath: embedded.path) else {
-            message = selection == nil ? "Codex 使用默认线路" : "未应用 · 需要包含已签名网络扩展的 Ashley VPN"
+        if usesDomainRules {
+            await applyDomainRules(selection)
             return
         }
         do {
+            // Remove domain preferences left by an earlier local build before enabling per-app routing.
+            try await Task.detached { try DomainRouting.apply(nil) }.value
             if #unavailable(macOS 14), selection != nil { throw RoutingError("Codex 分流需要 macOS 14 或更新版本") }
             message = "正在应用 Codex 线路"
             if selection != nil && !activated {
@@ -77,6 +93,30 @@ final class TransparentRouting: NSObject, OSSystemExtensionRequestDelegate {
                     : "已应用到 Codex 新连接 · \(selection.name)"
             } else { message = "Codex 使用默认线路" }
         } catch { message = "未确认应用 · \(error.localizedDescription)" }
+    }
+
+    private func applyDomainRules(_ selection: CodexProxyStatus.Selection?) async {
+        lastServices = DomainRouting.primaryServices()
+        appliedScript = nil
+        do {
+            let (script, available) = try await Task.detached { () throws -> (String?, Bool) in
+                let endpoint = selection?.proxyURL.flatMap { url in
+                    CodexProxyStatus.localProxyRoute(url)?.id == selection?.id ? url : nil
+                }
+                let script = try selection.map { _ in try DomainRouting.script(for: endpoint) }
+                try DomainRouting.apply(script)
+                return (script, endpoint != nil)
+            }.value
+            if let script, let selection {
+                for _ in 0..<20 where DomainRouting.effectiveScript() != script {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
+                appliedScript = script
+                if !policyActive { message = "等待系统应用域名代理" }
+                else if available { message = "OpenAI 域名已设置代理 · \(selection.name)" }
+                else { message = "等待 \(selection.name) 代理恢复" }
+            } else { message = "OpenAI 域名使用默认线路" }
+        } catch { message = "未应用 · \(error.localizedDescription)" }
     }
 
     func uninstall() async throws {

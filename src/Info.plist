@@ -17,9 +17,11 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.44</string>
+    <string>0.1.45</string>
     <key>CFBundleVersion</key>
-    <string>46</string>
+    <string>47</string>
+    <key>AshleyDomainRouting</key>
+    <true/>
     <key>NSSystemExtensionUsageDescription</key>
     <string>按菜单所选线路转发 Codex 模型进程的新连接。</string>
     <key>LSMinimumSystemVersion</key>

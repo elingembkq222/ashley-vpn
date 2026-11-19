@@ -7,7 +7,7 @@ uninstall_ashley_vpn() {
   local domain='com.ashley.vpn.companion'
   local state="$HOME/Library/Application Support/Ashley VPN"
   local launcher="$HOME/.local/bin/ashleyvpn"
-  local process='^/Applications/Ashley VPN\.app/Contents/MacOS/ashley-vpn-menu$'
+  local process='^/Applications/Ashley VPN\.app/Contents/MacOS/ashley-vpn-menu( --open-routed-codex)?$'
   local uninstall_fd trash file attempt forget_status
 
   if [[ "$(/usr/bin/uname -s)" != Darwin ]] || (( EUID == 0 )); then
@@ -42,6 +42,9 @@ uninstall_ashley_vpn() {
   fi
 
   if [[ -d "$app" ]]; then
+    if [[ "$(/usr/bin/plutil -extract AshleyDomainRouting raw -o - "$app/Contents/Info.plist" 2>/dev/null)" == true ]]; then
+      "$app/Contents/MacOS/ashley-vpn-menu" --remove-domain-routing || return 1
+    fi
     if [[ -d "$app/Contents/Library/SystemExtensions/com.ashley.vpn.companion.routing.systemextension" ]]; then
       "$app/Contents/MacOS/ashley-vpn-menu" --remove-routing
     fi
