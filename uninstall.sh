@@ -42,6 +42,9 @@ uninstall_ashley_vpn() {
   fi
 
   if [[ -d "$app" ]]; then
+    if [[ -d "$app/Contents/Library/SystemExtensions/com.ashley.vpn.companion.routing.systemextension" ]]; then
+      "$app/Contents/MacOS/ashley-vpn-menu" --remove-routing
+    fi
     if [[ -x "$app/Contents/Resources/wifi-keychain" ]]; then
       forget_status=0
       "$app/Contents/Resources/wifi-keychain" forget-all || forget_status=$?

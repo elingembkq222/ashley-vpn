@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleIdentifier</key><string>com.ashley.vpn.companion.routing</string>
+    <key>CFBundlePackageType</key><string>SYSX</string>
+    <key>CFBundleExecutable</key><string>CodexRouting</string>
+    <key>CFBundleName</key><string>Ashley Codex Routing</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSSystemExtensionUsageDescription</key><string>为 Codex 新连接应用所选线路。</string>
+    <key>NetworkExtension</key><dict>
+        <key>NEProviderClasses</key><dict>
+            <key>com.apple.networkextension.app-proxy</key><string>CodexProvider</string>
+        </dict>
+    </dict>
+</dict></plist>

@@ -15,14 +15,12 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private let defaults = UserDefaults.standard
     private var selectedRoute: CodexProxyStatus.Selection?
     private var proxyRoutes: [CodexProxyStatus.Route] = []
-    private let libCyberEgress = LibCyberEgress()
     private var proxyCheck: Task<Void, Never>?
     private var proxyTimer: Timer?
-    private var groupWasConnected = false
-    private var groupLossObservedAt: TimeInterval?
-    private var pendingCodexHandoff = false
-    private var quitAfterHandoff = false
+    private let routing = TransparentRouting()
     private var switchingCodexRoute = false
+    private var healthCheck: Task<Void, Never>?
+    private var failedProxyCheck: URL?
     private var codexRouteStatus: String?
     private var orb: FloatingOrb?
     private lazy var connectedMenuIcon = menuIcon(named: "MenuIcon")
@@ -74,6 +72,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         refreshCodexProxy()
         proxyTimer = makeTimer(interval: 60) { [weak self] in self?.refreshCodexProxy() }
         setStatusCadence(terminalInputActive: false)
+        applyRoute()
     }
 
     func applicationDidChangeScreenParameters(_ notification: Notification) {
@@ -187,12 +186,6 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             if code == 0, fields.count == 3, let next = VPNState(rawValue: String(fields[1])) {
                 self.hasVPNStatus = true
                 self.state = next
-                if next == .connected {
-                    self.groupWasConnected = true
-                    self.groupLossObservedAt = nil
-                } else if self.groupWasConnected && self.groupLossObservedAt == nil {
-                    self.groupLossObservedAt = self.uptime
-                }
                 self.busy = fields[0] == "busy"
                 self.activeOperation = self.busy && UUID(uuidString: String(fields[2])) != nil ? String(fields[2]) : nil
                 self.progress = self.busy && lines.count > 1 ? lines[1] : ""
@@ -216,8 +209,11 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             }
             self.updateDisplay()
             self.cancelWhenReady()
-            if self.hasVPNStatus && !self.isTransitioning { self.refreshLibCyberEgress() }
-            self.finishGroupDisconnect()
+            let status = self.routing.status
+            if status != self.codexRouteStatus {
+                self.codexRouteStatus = status
+                self.updateProxyMenu()
+            }
         }
     }
 
@@ -230,16 +226,17 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             }.value
             guard !Task.isCancelled, let self else { return }
             self.proxyCheck = nil
-            guard routes != self.proxyRoutes else { return }
+            if routes == self.proxyRoutes {
+                if self.routing.needsReconnect { self.applyRoute() }
+                else { self.checkSelectedProxy() }
+                return
+            }
+            let previous = self.resolvedSelection?.proxyURL
             self.proxyRoutes = routes
+            if previous != self.resolvedSelection?.proxyURL || self.routing.needsReconnect { self.applyRoute() }
+            else { self.checkSelectedProxy() }
             self.updateProxyMenu()
         }
-    }
-
-    private func resetProxyCheck() {
-        proxyCheck?.cancel()
-        proxyCheck = nil
-        refreshCodexProxy()
     }
 
     private func updateProxyMenu() {
@@ -247,7 +244,8 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
         if let codexRouteStatus {
-            let status = NSMenuItem(title: codexRouteStatus, action: nil, keyEquivalent: "")
+            let failed = routing.policyActive && failedProxyCheck != nil && failedProxyCheck == resolvedSelection?.proxyURL
+            let status = NSMenuItem(title: failed ? "所选代理未通过 Codex 连通检查" : codexRouteStatus, action: nil, keyEquivalent: "")
             status.isEnabled = false
             menu.addItem(status)
             menu.addItem(.separator())
@@ -266,17 +264,19 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             case .systemVPN(let available):
                 title = "\(route.name) · \(available ? "系统 VPN" : "当前不可用")"
             case .runningClient(let supportsProxy):
-                title = "\(route.name) · \(supportsProxy ? "已启动，待启用系统代理" : "已启动")"
+                title = "\(route.name) · \(supportsProxy ? "等待代理端口" : "已启动")"
             }
             let item = addItem(title, action: #selector(selectCodexProxy(_:)), to: menu)
             item.representedObject = route.id
             item.isEnabled = !switchingCodexRoute
             item.state = route.id == selectedRoute?.id ? .on : .off
             if case .localProxy = route.kind {
-                item.toolTip = "本机代理须设为 macOS 系统代理"
+                item.toolTip = "Codex 通过此客户端的本地代理连接"
+            } else if case .runningClient(true) = route.kind {
+                item.toolTip = "可提前选择，代理就绪后 Codex 的新连接将使用此线路"
             } else if case .runningClient(false) = route.kind {
                 item.isEnabled = false
-                item.toolTip = "请在此客户端中管理连接"
+                item.toolTip = "等待客户端提供可识别的代理或 VPN 隧道"
             } else if case .systemVPN(false) = route.kind {
                 item.isEnabled = false
                 item.toolTip = "请在当前网络位置启用此 VPN"
@@ -303,117 +303,43 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             defaults.removeObject(forKey: "codexRoute")
             selectedRoute = nil
         }
-        codexRouteStatus = selectedRoute?.id == LibCyberEgress.routeID ? nil : "将在集团 VPN 断开后应用"
-        if hasVPNStatus && !isTransitioning { refreshLibCyberEgress(force: true) }
+        applyRoute()
+    }
+
+    private var resolvedSelection: CodexProxyStatus.Selection? {
+        guard let selectedRoute, let route = proxyRoutes.first(where: { $0.id == selectedRoute.id }) else { return selectedRoute }
+        return CodexProxyStatus.Selection(route)
+    }
+
+    private func applyRoute() {
+        guard !switchingCodexRoute else { return }
+        let requested = resolvedSelection
+        switchingCodexRoute = true
         updateProxyMenu()
-        if hasVPNStatus && state != .connected && !isTransitioning {
-            pendingCodexHandoff = true
-            finishGroupDisconnect()
+        Task {
+            await routing.apply(requested)
+            checkSelectedProxy()
+            switchingCodexRoute = false
+            codexRouteStatus = routing.status
+            updateProxyMenu()
+            if requested?.proxyURL != resolvedSelection?.proxyURL { applyRoute() }
         }
     }
 
-    private func refreshLibCyberEgress(force: Bool = false) {
-        libCyberEgress.refresh(connected: state == .connected, selection: selectedRoute, force: force)
-    }
-
-    private func finishGroupDisconnect() {
-        guard hasVPNStatus, state != .connected, !isTransitioning, !switchingCodexRoute,
-              groupWasConnected || pendingCodexHandoff else { return }
-        if !pendingCodexHandoff, let observed = groupLossObservedAt, uptime - observed < 4 { return }
-        groupWasConnected = false
-        groupLossObservedAt = nil
-        pendingCodexHandoff = false
-        let quit = quitAfterHandoff
-        quitAfterHandoff = false
-        let selection = selectedRoute
-        if selection == nil && defaults.string(forKey: "startedCodexVPN") == nil {
-            codexRouteStatus = nil
-            updateProxyMenu()
-            if quit { self.quit() }
+    private func checkSelectedProxy() {
+        healthCheck?.cancel()
+        guard routing.policyActive, let selection = resolvedSelection, let url = selection.proxyURL else {
+            failedProxyCheck = nil
             return
         }
-        switchingCodexRoute = true
-        codexRouteStatus = selection.map { "正在切换至 \($0.name)" } ?? "正在恢复默认线路"
-        updateProxyMenu()
-        updateDisplay()
-        Task {
-            let result = await applyCodexRoute(selection)
-            switchingCodexRoute = false
-            codexRouteStatus = result.message
-            resetProxyCheck()
+        healthCheck = Task {
+            let reachable = await Task.detached(priority: .utility) {
+                CodexProxyStatus.localProxyRoute(url)?.id == selection.id && CodexProxyStatus.proxyIsReachable(url)
+            }.value
+            guard !Task.isCancelled, resolvedSelection?.proxyURL == url else { return }
+            failedProxyCheck = reachable ? nil : url
             updateProxyMenu()
-            if quit && result.success {
-                self.quit()
-            } else if !result.success {
-                feedback = result.message
-                feedbackTone = .warning
-                feedbackUntil = uptime + 8
-            }
-            updateDisplay()
         }
-    }
-
-    private func applyCodexRoute(_ selection: CodexProxyStatus.Selection?) async -> (success: Bool, message: String) {
-        let desiredVPN = selection.flatMap { $0.id.hasPrefix("vpn:") ? $0.id : nil }
-        if let desiredVPN,
-           let route = proxyRoutes.first(where: { $0.id == desiredVPN }), case .systemVPN(false) = route.kind {
-            return (false, "请在当前网络位置启用 \(route.name)")
-        }
-        if let started = defaults.string(forKey: "startedCodexVPN"), started != desiredVPN {
-            let released = await Task.detached(priority: .utility) {
-                let status = CodexProxyStatus.vpnStatus(started)
-                return status == "Disconnected" || CodexProxyStatus.changeVPN(started, connect: false)
-            }.value
-            guard released, await waitForVPN(started, status: "Disconnected") else {
-                return (false, "无法断开 Ashley VPN 启动的备用 VPN")
-            }
-            defaults.removeObject(forKey: "startedCodexVPN")
-        }
-        if let selection, selection.id.hasPrefix("proxy:") {
-            let result = await Task.detached(priority: .utility) {
-                for attempt in 0..<3 {
-                    if let route = CodexProxyStatus.systemProxyForCodex(), route.id == selection.id,
-                       case let .localProxy(url) = route.kind, CodexProxyStatus.proxyIsReachable(url) {
-                        return (true, "系统代理可访问 Codex · \(selection.name)")
-                    }
-                    if attempt < 2 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
-                }
-                if CodexProxyStatus.systemProxyForCodex()?.id != selection.id {
-                    return (false, "请在 \(selection.name) 中启用系统代理")
-                }
-                return (false, "\(selection.name) 暂时无法访问 Codex")
-            }.value
-            return result
-        }
-        if let desiredVPN, let selection {
-            let started = await Task.detached(priority: .utility) {
-                let status = CodexProxyStatus.vpnStatus(desiredVPN)
-                if status == "Connected" || status == "Connecting" { return (true, false) }
-                return (CodexProxyStatus.changeVPN(desiredVPN, connect: true), true)
-            }.value
-            guard started.0 else { return (false, "无法连接 \(selection.name)") }
-            if started.1 { defaults.set(desiredVPN, forKey: "startedCodexVPN") }
-            guard await waitForVPN(desiredVPN, status: "Connected") else {
-                return (false, "\(selection.name) 尚未连接，请检查 macOS VPN 状态")
-            }
-        }
-        if let desiredVPN, let selection {
-            let routed = await Task.detached(priority: .utility) {
-                CodexProxyStatus.vpnCarriesCodexTraffic(desiredVPN)
-            }.value
-            if !routed { return (false, "\(selection.name) 已连接，未确认 Codex 流量经过该 VPN") }
-        }
-        return (true, selection.map { "系统 VPN 已连接 · \($0.name)" } ?? "Codex 使用默认线路")
-    }
-
-    private func waitForVPN(_ id: String, status: String) async -> Bool {
-        await Task.detached(priority: .utility) {
-            for _ in 0..<20 {
-                if CodexProxyStatus.vpnStatus(id) == status { return true }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-            return false
-        }.value
     }
 
     private func toggleFromDesktop() {
@@ -517,7 +443,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         if let image = connected ? connectedOrb : disabledOrb {
             orb?.update(image: image, hint: hint, phase: phase)
         }
-        orb?.setExitBubbleAvailable(hasVPNStatus && !isTransitioning && !switchingCodexRoute)
+        orb?.setExitBubbleAvailable(hasVPNStatus && !isTransitioning)
         if isTransitioning {
             let seconds = max(0, countdown ?? Int(elapsed))
             let time = String(format: "%d:%02d", seconds / 60, seconds % 60)
@@ -544,7 +470,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     private func quit() { NSApp.terminate(nil) }
 
     @objc private func confirmOrbExit() {
-        guard hasVPNStatus, !isTransitioning, !switchingCodexRoute else { return }
+        guard hasVPNStatus, !isTransitioning else { return }
         run("disconnect-keep-network", quitWhenFinished: true)
     }
 
@@ -556,7 +482,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     }
 
     private func run(_ action: String, quitWhenFinished: Bool = false) {
-        guard !isTransitioning, !switchingCodexRoute else { return }
+        guard !isTransitioning else { return }
         let disconnecting = action == "disconnect" || action == "disconnect-keep-network" ||
             (action == "toggle" && state == .connected)
         workerRunning = true
@@ -565,10 +491,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         updateDisplay()
         runMonitor([action], worker: true) { [weak self] code, raw in
             guard let self else { return }
-            if disconnecting && code == 0 {
-                self.pendingCodexHandoff = true
-                self.quitAfterHandoff = quitWhenFinished && self.cancellation == nil
-            }
+            if disconnecting && code == 0 && quitWhenFinished && self.cancellation == nil { self.quit(); return }
             self.workerRunning = false
             self.pendingUntil = nil
             self.progress = ""
@@ -637,6 +560,14 @@ struct Main {
     @MainActor
     static func main() {
         let arguments = CommandLine.arguments
+        if arguments == [arguments[0], "--remove-routing"] {
+            Task { @MainActor in
+                do { try await TransparentRouting().uninstall(); exit(0) }
+                catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }
+            }
+            RunLoop.main.run()
+            return
+        }
         if arguments.count == 3, arguments[1] == "--vpn-worker" {
             guard let runner = Bundle.main.url(forResource: "run-vpn", withExtension: "zsh"),
                   getpgrp() == getpid() || setpgid(0, 0) == 0 else { exit(1) }

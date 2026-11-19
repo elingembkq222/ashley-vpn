@@ -23,6 +23,8 @@ func discover(_ identifier: String, _ name: String, _ url: URL) -> CodexProxySta
     CodexProxyStatus.runningClient(identifier: identifier, name: name, url: url)
 }
 let client = discover("com.libcyber.pirate", "LibCyber Desktop", plain)!
+let endpoints = CodexProxyStatus.libCyberProxyURLs("  port: 443\\nport: 8890 # local\\nsocks-port: 8891\\nmixed-port: 65536")
+precondition(endpoints.map { $0.absoluteString } == ["http://127.0.0.1:8890", "socks5h://127.0.0.1:8891"])
 precondition(client.kind == .runningClient(supportsSystemProxy: true))
 precondition(CodexProxyStatus.Selection(client).id == "proxy:com.libcyber.pirate")
 precondition(discover("test.example", "Example", tunnel)?.kind == .runningClient(supportsSystemProxy: false))

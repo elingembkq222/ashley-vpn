@@ -2,6 +2,7 @@
 import errno
 import json
 import os
+import plistlib
 from pathlib import Path
 import pty
 import select
@@ -36,12 +37,23 @@ class ToolchainTests(unittest.TestCase):
                 ], capture_output=True, text=True)
                 self.assertEqual(result.returncode == 0, expected, result.stderr)
 
-    def run_installer(self, *, answer="y", mode="", update="success", terminal=True):
+    def run_installer(self, *, answer="y", mode="", update="success", terminal=True, newer_installed=False):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Path(directory)
             (fixture / "src").mkdir()
+            app = fixture / "Ashley VPN.app"
+            (fixture / "calls").touch()
+            if newer_installed:
+                contents = app / "Contents"
+                contents.mkdir(parents=True)
+                (contents / "Info.plist").write_bytes(plistlib.dumps({
+                    "CFBundleIdentifier": "com.ashley.vpn.companion",
+                    "CFBundleShortVersionString": "99.0.0",
+                    "CFBundleVersion": "1",
+                }))
             for name in ["install.sh", "src/check-toolchain.zsh", "src/terminal-banner.zsh", "src/Info.plist"]:
                 content = (ROOT / name).read_text()
+                content = content.replace("/Applications/Ashley VPN.app", str(app))
                 for tool in ["xcrun", "xcode-select", "sudo", "softwareupdate"]:
                     prefix = "/usr/sbin" if tool == "softwareupdate" else "/usr/bin"
                     content = content.replace(f"{prefix}/{tool}", str(fixture / tool))
@@ -130,6 +142,11 @@ elif tool == 'sudo':
             self.assertNotIn("Traceback", output)
             calls = (fixture / "calls").read_text()
             return output, calls
+
+    def test_newer_installed_release_is_preserved_before_build(self):
+        output, calls = self.run_installer(newer_installed=True, terminal=False)
+        self.assertIn("已保留本机版本", output)
+        self.assertEqual(calls, "")
 
     def test_authorized_update_rechecks_and_continues(self):
         output, calls = self.run_installer()
