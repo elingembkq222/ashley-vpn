@@ -5,7 +5,7 @@ import Security
 
 // The issuer must be verified by the trust evaluation, not by its display name.
 private let companyCA = "a3e586bf8b8fe284b7a825929d00ee242eec26f94fc4347380ecb53e621eff38"
-// Imported private keys use this rule for the application list shown in Keychain Access.
+// The general rule shown in Keychain Access can coexist with separate signing rules.
 private let privateKeyActions = Set([
     kSecACLAuthorizationDecrypt, kSecACLAuthorizationDerive, kSecACLAuthorizationExportClear,
     kSecACLAuthorizationExportWrapped, kSecACLAuthorizationMAC, kSecACLAuthorizationSign,
@@ -96,14 +96,7 @@ private struct PrivateKeyRule {
         return applications.contains { trustedData($0) == groupPath }
     }
 
-    init?(_ access: SecAccess) {
-        var list: CFArray?
-        guard SecAccessCopyACLList(access, &list) == errSecSuccess, let acls = list as? [SecACL] else {
-            return nil
-        }
-        let candidates = acls.filter { Set(SecACLCopyAuthorizations($0) as? [String] ?? []) == privateKeyActions }
-        guard candidates.count == 1, let acl = candidates.first else { return nil }
-
+    init?(_ acl: SecACL) {
         var applicationList: CFArray?
         var description: CFString?
         var prompt = SecKeychainPromptSelector()
@@ -143,6 +136,46 @@ private struct PrivateKeyRule {
 
     func restorePrompt() -> Bool {
         SecACLSetContents(acl, applications as CFArray, description, []) == errSecSuccess
+    }
+}
+
+// Inspect every signing rule, including the independent rule created by GlobalProtect.
+// Unknown layouts fail closed rather than reporting a partial check as complete.
+private struct PrivateKeyRules {
+    let general: PrivateKeyRule
+    let all: [PrivateKeyRule]
+
+    init?(_ access: SecAccess) {
+        var list: CFArray?
+        guard SecAccessCopyACLList(access, &list) == errSecSuccess,
+              let acls = list as? [SecACL] else { return nil }
+        var general: PrivateKeyRule?
+        var rules: [PrivateKeyRule] = []
+        for acl in acls {
+            guard let actions = SecACLCopyAuthorizations(acl) as? [String] else { return nil }
+            let operations = Set(actions)
+            guard operations.contains(kSecACLAuthorizationSign as String) ||
+                  operations.contains(kSecACLAuthorizationAny as String) else { continue }
+            guard operations == privateKeyActions || operations == [kSecACLAuthorizationSign as String],
+                  let rule = PrivateKeyRule(acl) else { return nil }
+            if operations == privateKeyActions {
+                guard general == nil else { return nil }
+                general = rule
+            }
+            rules.append(rule)
+        }
+        guard let general else { return nil }
+        self.general = general
+        self.all = rules
+    }
+
+    func missingApplications(_ apps: [SigningApplication]) -> [[SigningApplication]]? {
+        var result: [[SigningApplication]] = []
+        for rule in all {
+            guard let missing = rule.missingApplications(apps) else { return nil }
+            result.append(missing)
+        }
+        return result
     }
 }
 
@@ -204,10 +237,12 @@ private func checkGlobalProtectSigning(
     let item = unsafeBitCast(key, to: SecKeychainItem.self)
     var resultAccess: SecAccess?
     guard SecKeychainItemCopyAccess(item, &resultAccess) == errSecSuccess,
-          let access = resultAccess, let rule = PrivateKeyRule(access),
-          let missing = rule.missingApplications(apps) else {
+          let access = resultAccess, let rules = PrivateKeyRules(access),
+          let missingByRule = rules.missingApplications(apps) else {
         return report("无法唯一识别集团 VPN 私钥的应用访问规则，未修改钥匙串。", status: 4)
     }
+    let rule = rules.general
+    let missing = apps.filter { app in missingByRule.contains { $0.contains { $0.path == app.path } } }
     if restorePrompt {
         if !rule.prompt.contains(.requirePassphase) {
             return report("集团 VPN 私钥未开启逐次密码提示。")
@@ -217,11 +252,12 @@ private func checkGlobalProtectSigning(
         })
         let existingPaths = rule.applications.compactMap(trustedData)
         guard rule.prompt == .requirePassphase, missing.isEmpty,
+              rules.all.allSatisfy({ !$0.prompt.contains(.requirePassphase) || $0.acl === rule.acl }),
               existingPaths.count == rule.applications.count,
               existingPaths.count == expectedPaths.count, Set(existingPaths) == expectedPaths else {
             return report("集团 VPN 私钥的设置与已知问题不匹配，未修改钥匙串。", status: 4)
         }
-    } else if rule.prompt.contains(.requirePassphase) {
+    } else if rules.all.contains(where: { $0.prompt.contains(.requirePassphase) }) {
         return report("集团 VPN 私钥要求每次访问时验证钥匙串密码，已保留此设置。", status: 4)
     } else if missing.isEmpty && rule.hasIdentityExportGroup {
         return report("集团 VPN 私钥访问权限已齐全。")
@@ -241,7 +277,16 @@ private func checkGlobalProtectSigning(
         return report("macOS 未能创建 \(identityExportGroup) 应用组授权。", status: 1)
     }
     let expectedPrompt = restorePrompt ? SecKeychainPromptSelector() : rule.prompt
-    guard (restorePrompt ? rule.restorePrompt() : rule.add(missing, identityExport: group)) else {
+    let prepared: Bool
+    if restorePrompt {
+        prepared = rule.restorePrompt()
+    } else {
+        prepared = zip(rules.all, missingByRule).allSatisfy { current, missing in
+            let exportGroup = current.acl === rule.acl ? group : nil
+            return (missing.isEmpty && exportGroup == nil) || current.add(missing, identityExport: exportGroup)
+        }
+    }
+    guard prepared else {
         return report("无法准备集团 VPN 私钥的访问权限。", status: 1)
     }
     let save = SecKeychainItemSetAccess(item, access)
@@ -250,11 +295,15 @@ private func checkGlobalProtectSigning(
     }
     var verifiedAccess: SecAccess?
     guard SecKeychainItemCopyAccess(item, &verifiedAccess) == errSecSuccess, let verifiedAccess,
-          let verifiedRule = PrivateKeyRule(verifiedAccess),
-          verifiedRule.prompt == expectedPrompt,
-          verifiedRule.hasIdentityExportGroup,
-          !restorePrompt || verifiedRule.applications.compactMap(trustedData) == rule.applications.compactMap(trustedData),
-          verifiedRule.missingApplications(apps)?.isEmpty == true else {
+          let verifiedRules = PrivateKeyRules(verifiedAccess),
+          verifiedRules.all.count == rules.all.count,
+          verifiedRules.general.prompt == expectedPrompt,
+          verifiedRules.general.hasIdentityExportGroup,
+          zip(verifiedRules.all, rules.all).allSatisfy({ new, old in
+              new.prompt == (restorePrompt && old.acl === rule.acl ? expectedPrompt : old.prompt)
+          }),
+          !restorePrompt || verifiedRules.general.applications.compactMap(trustedData) == rule.applications.compactMap(trustedData),
+          verifiedRules.missingApplications(apps)?.allSatisfy({ $0.isEmpty }) == true else {
         return report("无法验证新的签名授权，请在钥匙串访问中检查。", status: 1)
     }
     if restorePrompt {

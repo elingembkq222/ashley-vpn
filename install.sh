@@ -143,7 +143,7 @@ repair_certificate_access() {
   local checker="$stage/globalprotect-keychain" result check_status=0
   local certificate_build_failed=false
   local check_option=--check write_option=--repair
-  local message='验证管理员身份后，将补齐集团 VPN 私钥访问列表中缺少的授权。'
+  local message='检测到权限缺项；验证管理员身份后，将自动补齐集团 VPN 私钥的通用及独立签名授权。'
   if [[ "$mode" == --restore-keychain-prompt ]]; then
     check_option=--check-prompt
     write_option=--restore-prompt

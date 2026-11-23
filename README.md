@@ -33,6 +33,8 @@ curl -fsSL 'https://raw.githubusercontent.com/elingembkq222/ashley-vpn/main/boot
 
 Run the same command to update or repair VPN certificate permissions. If any access grants listed above are missing, the installer prompts for administrator authentication, adds the missing grants, and verifies them.
 
+Installation, upgrades, and rerunning the installer for an already installed version automatically check both the general private-key access list and every independent signing rule. Missing GlobalProtect or PanGPS grants are repaired after macOS administrator authentication and then checked again as the current user. Existing application grants and password-prompt settings are preserved; unfamiliar ACL layouts are reported for manual review.
+
 If the private key was inadvertently set to prompt for a password on every use, rerun the pipeline with `bash -s -- --restore-keychain-prompt` in place of `bash`.
 
 ## Connect
