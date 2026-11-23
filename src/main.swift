@@ -53,6 +53,10 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let data = defaults.data(forKey: "codexRoute") {
             selectedRoute = try? JSONDecoder().decode(CodexProxyStatus.Selection.self, from: data)
+            if routing.usesDomainRules, selectedRoute?.id.hasPrefix("vpn:") == true {
+                selectedRoute = nil
+                defaults.removeObject(forKey: "codexRoute")
+            }
         }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.item = item
@@ -90,7 +94,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         addItem("连接 VPN", action: #selector(connect), to: menu)
         addItem("断开 VPN", action: #selector(disconnect), to: menu)
         menuCancel = addItem("取消操作", action: #selector(cancelFromMenu), to: menu)
-        let proxy = NSMenuItem(title: "Codex 流量", action: nil, keyEquivalent: "")
+        let proxy = NSMenuItem(title: routing.usesDomainRules ? "OpenAI 域名代理" : "Codex 流量", action: nil, keyEquivalent: "")
         menu.addItem(proxy)
         menuCodexProxy = proxy
         updateProxyMenu()
@@ -209,6 +213,9 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             }
             self.updateDisplay()
             self.cancelWhenReady()
+            if self.selectedRoute != nil && !self.switchingCodexRoute && self.routing.networkServiceChanged {
+                self.applyRoute()
+            }
             let status = self.routing.status
             if status != self.codexRouteStatus {
                 self.codexRouteStatus = status
@@ -221,19 +228,24 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         guard proxyCheck == nil else { return }
         let savedProxy = selectedRoute?.proxyURL
         proxyCheck = Task { [weak self] in
-            let routes = await Task.detached(priority: .utility) {
+            let discovered = await Task.detached(priority: .utility) {
                 CodexProxyStatus.routes(savedProxy: savedProxy)
             }.value
             guard !Task.isCancelled, let self else { return }
+            let routes = discovered.filter {
+                if case .localProxy = $0.kind { return true }
+                return !self.routing.usesDomainRules
+            }
             self.proxyCheck = nil
             if routes == self.proxyRoutes {
                 if self.routing.needsReconnect { self.applyRoute() }
                 else { self.checkSelectedProxy() }
                 return
             }
-            let previous = self.resolvedSelection?.proxyURL
+            let previous = self.proxyRoutes.first { $0.id == self.selectedRoute?.id }
             self.proxyRoutes = routes
-            if previous != self.resolvedSelection?.proxyURL || self.routing.needsReconnect { self.applyRoute() }
+            let current = routes.first { $0.id == self.selectedRoute?.id }
+            if previous != current || self.routing.needsReconnect { self.applyRoute() }
             else { self.checkSelectedProxy() }
             self.updateProxyMenu()
         }
@@ -271,7 +283,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             item.isEnabled = !switchingCodexRoute
             item.state = route.id == selectedRoute?.id ? .on : .off
             if case .localProxy = route.kind {
-                item.toolTip = "Codex 通过此客户端的本地代理连接"
+                item.toolTip = routing.usesDomainRules ? "ChatGPT、Codex 和 OpenAI 域名通过此代理连接" : "Codex 通过此客户端的本地代理连接"
             } else if case .runningClient(true) = route.kind {
                 item.toolTip = "可提前选择，代理就绪后 Codex 的新连接将使用此线路"
             } else if case .runningClient(false) = route.kind {
@@ -282,7 +294,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
                 item.toolTip = "请在当前网络位置启用此 VPN"
             }
         }
-        if let selectedRoute, !proxyRoutes.contains(where: { $0.id == selectedRoute.id }) {
+        if let selectedRoute, (!routing.usesDomainRules || selectedRoute.id.hasPrefix("proxy:")), !proxyRoutes.contains(where: { $0.id == selectedRoute.id }) {
             let unavailable = NSMenuItem(title: "\(selectedRoute.name) · 当前不可用", action: nil, keyEquivalent: "")
             unavailable.state = .on
             unavailable.isEnabled = false
@@ -560,6 +572,11 @@ struct Main {
     @MainActor
     static func main() {
         let arguments = CommandLine.arguments
+        if arguments == [arguments[0], "--remove-domain-routing"] {
+            do { try DomainRouting.apply(nil) }
+            catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }
+            return
+        }
         if arguments == [arguments[0], "--remove-routing"] {
             Task { @MainActor in
                 do { try await TransparentRouting().uninstall(); exit(0) }
