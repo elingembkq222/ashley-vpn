@@ -51,6 +51,10 @@ The source installer can build the extension on an authorized signing Mac. Set `
 
 Local builds offer **OpenAI 域名代理** for local HTTP and SOCKS listeners. The selected proxy applies to new system-proxy-aware requests for chatgpt.com, openai.com, oaistatic.com, oaiusercontent.com and their subdomains, including requests from other apps. The rule follows the active network service independently of GlobalProtect. Choose **无** to restore the previous settings. An existing active proxy configuration is preserved.
 
+The domain configuration includes both a native inline PAC script and an equivalent data URL. Chromium-based desktop clients read the PAC URL on macOS; supplying only the inline script leaves their workspace and account initialization requests on the default network path. The data URL needs no PAC server. Upgrades migrate the earlier inline-only configuration while keeping its original settings backup.
+
+GlobalProtect can publish the primary VPN service only in macOS's dynamic network store. Applying or restoring its domain rule requests macOS administrator authorization through the installed app's fixed helper. Existing unrelated proxy configurations remain protected. Native network services continue to use the standard network preferences authorization.
+
 ## Uninstall
 
 Run this from the macOS account that installed Ashley VPN.
