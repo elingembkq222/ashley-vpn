@@ -572,11 +572,6 @@ struct Main {
     @MainActor
     static func main() {
         let arguments = CommandLine.arguments
-        if arguments.count == 3, arguments[1] == "--apply-dynamic-domain-routing" {
-            do { try DomainRouting.applyDynamicHelper(arguments[2]) }
-            catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }
-            return
-        }
         if arguments == [arguments[0], "--remove-domain-routing"] {
             do { try DomainRouting.apply(nil) }
             catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }

@@ -50,18 +50,29 @@ enum DomainRouting {
         return configuredScript(settings)
     }
 
+    static let pacPort: UInt16 = 18946
+
     static func pacURL(for script: String) -> String {
-        dataURLPrefix + Data(script.utf8).base64EncodedString()
+        let encoded = Data(script.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        return "http://127.0.0.1:\(pacPort)/proxy/" + encoded + ".pac"
+    }
+
+    static func scriptFromPACURL(_ value: String) -> String? {
+        let prefix = "http://127.0.0.1:\(pacPort)/proxy/"
+        guard value.hasPrefix(prefix), value.hasSuffix(".pac"), value.count < 4096 else { return nil }
+        var encoded = String(value.dropFirst(prefix.count).dropLast(4))
+            .replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
+        guard let bytes = Data(base64Encoded: encoded), let script = String(data: bytes, encoding: .utf8),
+              isGeneratedScript(script), pacURL(for: script) == value else { return nil }
+        return script
     }
 
     static func configuredScript(_ settings: [String: Any]) -> String? {
         guard settings["ProxyAutoConfigEnable"] as? Int == 1,
-              let url = settings["ProxyAutoConfigURLString"] as? String, url.hasPrefix(dataURLPrefix),
-              let bytes = Data(base64Encoded: String(url.dropFirst(dataURLPrefix.count))),
-              let script = String(data: bytes, encoding: .utf8), isGeneratedScript(script),
-              url == pacURL(for: script)
-        else { return nil }
-        // CFNetwork omits the inline key from its effective settings when a PAC URL exists.
+              let url = settings["ProxyAutoConfigURLString"] as? String,
+              let script = scriptFromPACURL(url) else { return nil }
         if let inline = settings["ProxyAutoConfigJavaScript"] as? String, inline != script { return nil }
         return script
     }
@@ -73,7 +84,8 @@ enum DomainRouting {
         // Also recognize the old inline-only configuration so an upgrade restores its original backup.
         let owned = previous != nil && inline?.hasPrefix(marker) == true
             && result["ProxyAutoConfigEnable"] as? Int == 1
-            && (result["ProxyAutoConfigURLString"] == nil || configuredScript(result) != nil)
+            && (result["ProxyAutoConfigURLString"] == nil || configuredScript(result) != nil
+                || inline.map { result["ProxyAutoConfigURLString"] as? String == dataURLPrefix + Data($0.utf8).base64EncodedString() } == true)
         if owned, let previous {
             for key in pacKeys { result[key] = previous[key] }
         }
@@ -95,6 +107,11 @@ enum DomainRouting {
     }
 
     static func apply(_ script: String?) throws {
+        try RoutingAuthorization.apply(script)
+    }
+
+    static func applyPrivileged(_ script: String?) throws {
+        guard geteuid() == 0 else { throw Failure("网络代理组件需要安装级授权") }
         let primary = primaryServices()
         if script != nil && primary.isEmpty { throw Failure("等待活动网络") }
         func changes(in prefs: SCPreferences) throws -> [(SCNetworkProtocol, [String: Any])] {
@@ -170,43 +187,17 @@ enum DomainRouting {
     private static func applyDynamic(_ script: String?, primary: Set<String>) throws {
         guard let store = SCDynamicStoreCreate(nil, "Ashley VPN" as CFString, nil, nil) else { throw Failure("无法读取 VPN 代理设置") }
         guard try !dynamicChanges(store, script: script, primary: primary).isEmpty else { return }
-        if geteuid() == 0 {
-            for (key, next) in try dynamicChanges(store, script: script, primary: primary) {
-                guard SCDynamicStoreSetValue(store, key as CFString, next as CFDictionary) else { throw Failure("无法更新 VPN 域名代理") }
-            }
-            return
-        }
-        guard let executable = Bundle.main.executableURL else { throw Failure("无法定位 VPN 代理组件") }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", """
-        on run argv
-          do shell script (quoted form of item 1 of argv & " --apply-dynamic-domain-routing " & quoted form of item 2 of argv) with administrator privileges
-        end run
-        """, executable.path, script.map { Data($0.utf8).base64EncodedString() } ?? "-"]
-        let errors = Pipe()
-        process.standardError = errors
-        try process.run()
-        let diagnostics = errors.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw Failure("VPN 代理设置未获授权：" + (String(data: diagnostics, encoding: .utf8) ?? "未知错误"))
+        guard geteuid() == 0 else { throw Failure("网络代理组件需要安装级授权") }
+        for (key, next) in try dynamicChanges(store, script: script, primary: primary) {
+            guard SCDynamicStoreSetValue(store, key as CFString, next as CFDictionary) else { throw Failure("无法更新 VPN 域名代理") }
         }
     }
 
-    static func applyDynamicHelper(_ payload: String) throws {
-        guard geteuid() == 0 else { throw Failure("VPN 代理组件需要管理员授权") }
-        let script: String?
-        if payload == "-" { script = nil }
-        else {
-            guard let bytes = Data(base64Encoded: payload), let decoded = String(data: bytes, encoding: .utf8),
-                  isGeneratedScript(decoded) else { throw Failure("无效的 VPN 域名代理规则") }
-            script = decoded
-        }
-        guard let prefs = SCPreferencesCreate(nil, "Ashley VPN" as CFString, nil) else { throw Failure("无法读取网络服务") }
-        let persisted = Set((SCNetworkServiceCopyAll(prefs) as? [SCNetworkService] ?? []).compactMap {
-            SCNetworkServiceGetServiceID($0) as String?
-        })
-        try applyDynamic(script, primary: primaryServices().subtracting(persisted))
+    static func scriptFromPayload(_ payload: String) throws -> String? {
+        if payload == "-" { return nil }
+        guard payload.count < 4096, let bytes = Data(base64Encoded: payload),
+              let script = String(data: bytes, encoding: .utf8), isGeneratedScript(script)
+        else { throw Failure("无效的域名代理规则") }
+        return script
     }
 }

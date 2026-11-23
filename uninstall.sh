@@ -44,6 +44,10 @@ uninstall_ashley_vpn() {
   if [[ -d "$app" ]]; then
     if [[ "$(/usr/bin/plutil -extract AshleyDomainRouting raw -o - "$app/Contents/Info.plist" 2>/dev/null)" == true ]]; then
       "$app/Contents/MacOS/ashley-vpn-menu" --remove-domain-routing || return 1
+      local routing_helper='/Library/PrivilegedHelperTools/com.ashley.vpn.routing'
+      if "$routing_helper" check 2>/dev/null; then
+        "$routing_helper" uninstall || return 1
+      fi
     fi
     if [[ -d "$app/Contents/Library/SystemExtensions/com.ashley.vpn.companion.routing.systemextension" ]]; then
       "$app/Contents/MacOS/ashley-vpn-menu" --remove-routing

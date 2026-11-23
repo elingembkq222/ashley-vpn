@@ -51,9 +51,9 @@ The source installer can build the extension on an authorized signing Mac. Set `
 
 Local builds offer **OpenAI 域名代理** for local HTTP and SOCKS listeners. The selected proxy applies to new system-proxy-aware requests for chatgpt.com, openai.com, oaistatic.com, oaiusercontent.com and their subdomains, including requests from other apps. The rule follows the active network service independently of GlobalProtect. Choose **无** to restore the previous settings. An existing active proxy configuration is preserved.
 
-The domain configuration includes both a native inline PAC script and an equivalent data URL. Chromium-based desktop clients read the PAC URL on macOS; supplying only the inline script leaves their workspace and account initialization requests on the default network path. The data URL needs no PAC server. Upgrades migrate the earlier inline-only configuration while keeping its original settings backup.
+The domain configuration includes an inline PAC script and a loopback HTTP PAC URL. Both Chromium and the native macOS PAC interpreter can load the HTTP URL. The system-owned local service serves only validated OpenAI routing scripts and binds to 127.0.0.1:18946. It remains available while Ashley VPN is closed. PAC availability is checked before changing network preferences.
 
-GlobalProtect can publish the primary VPN service only in macOS's dynamic network store. Applying or restoring its domain rule requests macOS administrator authorization through the installed app's fixed helper. Existing unrelated proxy configurations remain protected. Native network services continue to use the standard network preferences authorization.
+The first selected route requests administrator authorization once to install a fixed system helper and its authenticated local socket. Later route changes and GlobalProtect service shutdown use that grant silently, including after app restarts and upgrades. The grant is tied to the installation ID, which upgrades preserve; uninstall removes the helper, local service and grant. A fresh installation needs one new authorization. The helper checks the socket peer identity and installation, accepts only generated loopback proxy rules and fixed GlobalProtect system service operations, and preserves unrelated proxy configurations. GlobalProtect's dynamic-only primary service is supported.
 
 ## Uninstall
 

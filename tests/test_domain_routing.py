@@ -12,6 +12,10 @@ let original: [String: Any] = ["ProxyAutoConfigEnable": 0, "ProxyAutoConfigURLSt
 let http = try DomainRouting.script(for: URL(string: "http://127.0.0.1:8890")!)
 let socks = try DomainRouting.script(for: URL(string: "socks5h://127.0.0.1:8891")!)
 let unavailable = try DomainRouting.script(for: nil)
+let receipt: [String: Any] = ["installation": "installation-one", "uid": "501"]
+precondition(RoutingAuthorization.receiptMatches(receipt, identity: "installation-one\n", uid: "501"))
+precondition(!RoutingAuthorization.receiptMatches(receipt, identity: "installation-reinstalled", uid: "501"))
+precondition(!RoutingAuthorization.receiptMatches(receipt, identity: "installation-one", uid: "502"))
 let pending = CFNetworkCopyProxiesForAutoConfigurationScript(unavailable as CFString,
     URL(string: "https://chatgpt.com")! as CFURL, nil)!.takeRetainedValue() as! [[String: Any]]
 precondition(pending.count == 1 && pending[0][kCFProxyHostNameKey as String] as? String == "selected-route-unavailable.invalid")
@@ -23,14 +27,20 @@ precondition(DomainRouting.configuredScript(effectiveSettings) == http)
 effectiveSettings["ProxyAutoConfigJavaScript"] = socks
 precondition(DomainRouting.configuredScript(effectiveSettings) == nil)
 let pacURL = URL(string: first["ProxyAutoConfigURLString"] as! String)!
-precondition(pacURL.scheme == "data")
-let decodedPAC = try String(contentsOf: pacURL, encoding: .utf8)
+precondition(pacURL.scheme == "http" && pacURL.host == "127.0.0.1")
+let decodedPAC = DomainRouting.scriptFromPACURL(pacURL.absoluteString)
 precondition(decodedPAC == http)
 var legacy = first
 legacy.removeValue(forKey: "ProxyAutoConfigURLString")
 precondition(DomainRouting.configuredScript(legacy) == nil)
 let migrated = try DomainRouting.configuration(legacy, script: http)
 precondition((migrated as NSDictionary).isEqual(to: first))
+var oldDataURL = first
+oldDataURL["ProxyAutoConfigURLString"] = "data:application/x-ns-proxy-autoconfig;base64," + Data(http.utf8).base64EncodedString()
+let upgradedDataURL = try DomainRouting.configuration(oldDataURL, script: socks)
+precondition(DomainRouting.configuredScript(upgradedDataURL) == socks)
+do { _ = try DomainRouting.scriptFromPayload(Data((http + "\n// modified").utf8).base64EncodedString()); fatalError("accepted arbitrary PAC") }
+catch is DomainRouting.Failure {}
 let restoredLegacy = try DomainRouting.configuration(legacy, script: nil)
 precondition((restoredLegacy as NSDictionary).isEqual(to: original))
 let vpnOriginal: [String: Any] = ["ProxyAutoConfigEnable": 1, "ProxyAutoConfigJavaScript": http,
@@ -77,4 +87,4 @@ for (script, port) in [(http, 8890), (socks, 8891)] {
     }
 }
 """
-        subprocess.run(["xcrun", "swift", "-"], input=source.read_text() + checks, text=True, check=True, timeout=30)
+        subprocess.run(["xcrun", "swift", "-"], input=source.read_text() + (source.parent / "RoutingAuthorization.swift").read_text() + checks, text=True, check=True, timeout=30)

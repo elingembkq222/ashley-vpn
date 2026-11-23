@@ -89,7 +89,13 @@ gp-start() {
     return 1
   fi
   if (( gpSystemLoaded )); then
-    if [[ "$ASHLEY_VPN_BACKGROUND" == 1 && ! -t 0 ]]; then
+    local gpRoutingHelper=/Library/PrivilegedHelperTools/com.ashley.vpn.routing
+    if "$gpRoutingHelper" check >/dev/null 2>&1; then
+      "$gpRoutingHelper" start-system || return
+    elif [[ -f "$ASHLEY_VPN_RESOURCES/routing-service" ]]; then
+      print -u2 -- '安装级授权未完成，已停止重复请求密码。'
+      return 77
+    elif [[ "$ASHLEY_VPN_BACKGROUND" == 1 && ! -t 0 ]]; then
       _gp-terminal-input start-system || return
     else
       _gp-start-service system com.paloaltonetworks.gp.pangpsd \
@@ -128,17 +134,26 @@ _gp-stop-system-service() {
   local gpInputMode=stop-system
   [[ "$gpCancelling" != 1 ]] || gpInputMode=cancel-stop-system
   local gpHelper=/private/etc/ashley-vpn-stop
+  local gpRoutingHelper=/Library/PrivilegedHelperTools/com.ashley.vpn.routing
+  local -a gpCommand=(/usr/bin/sudo -kn -- "$gpHelper")
+  if "$gpRoutingHelper" check >/dev/null 2>&1; then
+    gpHelper=$gpRoutingHelper
+    gpCommand=("$gpRoutingHelper")
+  elif [[ -f "$ASHLEY_VPN_RESOURCES/routing-service" ]]; then
+    print -u2 -- '安装级授权未完成，已停止重复请求密码。'
+    return 77
+  fi
 
-  gpOutput=$(LC_ALL=C /usr/bin/sudo -kn -- "$gpHelper" check 2>&1)
+  gpOutput=$(LC_ALL=C "${gpCommand[@]}" check 2>&1)
   gpStatus=$?
   if (( gpStatus == 0 )); then
-    /usr/bin/sudo -kn -- "$gpHelper" disable || return
+    "${gpCommand[@]}" disable || return
     if /bin/launchctl print "$gpSystemJob" >/dev/null 2>&1; then
-      _gp-progress-run '正在停止 GlobalProtect 系统服务' /usr/bin/sudo -kn -- "$gpHelper" bootout ||
+      _gp-progress-run '正在停止 GlobalProtect 系统服务' "${gpCommand[@]}" bootout ||
         ! /bin/launchctl print "$gpSystemJob" >/dev/null 2>&1 || return 1
     fi
     if [[ "$2" == residual ]]; then
-      /usr/bin/sudo -kn -- "$gpHelper" kill-residual || return
+      "${gpCommand[@]}" kill-residual || return
     fi
     return 0
   fi
