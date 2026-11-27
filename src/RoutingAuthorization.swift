@@ -31,11 +31,10 @@ enum RoutingAuthorization {
         return process.terminationStatus
     }
 
-    static func apply(_ script: String?) throws {
+    static func ensureAuthorized(retry: Bool = false) throws {
         if try run(["check"]) != 0 {
-            guard script != nil else { return }
-            guard !UserDefaults.standard.bool(forKey: attemptKey) else {
-                throw DomainRouting.Failure("安装级授权未完成，自动切换已停止重复请求")
+            guard retry || !UserDefaults.standard.bool(forKey: attemptKey) else {
+                throw DomainRouting.Failure("安装授权未完成，请重新选择线路或点击连接 VPN 以重试授权")
             }
             UserDefaults.standard.set(true, forKey: attemptKey)
             guard let installer = Bundle.main.url(forResource: "setup-routing-authorization", withExtension: "sh") else {
@@ -63,8 +62,16 @@ enum RoutingAuthorization {
             }
             guard ready else {
                 let detail = String(data: errorData, encoding: .utf8) ?? ""
-                throw DomainRouting.Failure("安装级授权未完成，自动切换不会重复请求密码。" + detail)
+                throw DomainRouting.Failure("安装授权未完成，本次操作已停止；可再次点击重试授权。" + detail)
             }
+        }
+    }
+
+    static func apply(_ script: String?, retryAuthorization: Bool = false) throws {
+        if script != nil {
+            try ensureAuthorized(retry: retryAuthorization)
+        } else if try run(["check"]) != 0 {
+            return
         }
         let payload = script.map { Data($0.utf8).base64EncodedString() } ?? "-"
         guard try run(["apply", payload]) == 0 else {

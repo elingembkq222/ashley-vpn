@@ -57,6 +57,8 @@ The domain configuration includes an inline PAC script and a loopback HTTP PAC U
 
 The first selected route requests administrator authorization once to install a fixed system helper and its authenticated local socket. Later route changes and GlobalProtect service shutdown use that grant silently, including after app restarts and upgrades. The grant is tied to the installation ID, which upgrades preserve; uninstall removes the helper, local service and grant. A fresh installation needs one new authorization. The helper checks the socket peer identity and installation, accepts only generated loopback proxy rules and fixed GlobalProtect system service operations, and preserves unrelated proxy configurations. GlobalProtect's dynamic-only primary service is supported.
 
+Connecting or stopping GlobalProtect also requests this authorization if the helper is missing, unavailable, or no longer matches the installation. After authorization succeeds, the original operation continues. Cancelling or failing authorization ends that operation; clicking connect/disconnect or selecting a route again can retry, even after an earlier failed authorization. Background route checks do not repeatedly request a password after a failed attempt.
+
 ## Uninstall
 
 Run this from the macOS account that installed Ashley VPN.

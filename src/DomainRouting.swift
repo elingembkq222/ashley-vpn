@@ -106,8 +106,8 @@ enum DomainRouting {
         return result
     }
 
-    static func apply(_ script: String?) throws {
-        try RoutingAuthorization.apply(script)
+    static func apply(_ script: String?, retryAuthorization: Bool = false) throws {
+        try RoutingAuthorization.apply(script, retryAuthorization: retryAuthorization)
     }
 
     static func applyPrivileged(_ script: String?) throws {

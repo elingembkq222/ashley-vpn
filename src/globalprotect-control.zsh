@@ -90,11 +90,11 @@ gp-start() {
   fi
   if (( gpSystemLoaded )); then
     local gpRoutingHelper=/Library/PrivilegedHelperTools/com.ashley.vpn.routing
-    if "$gpRoutingHelper" check >/dev/null 2>&1; then
+    if [[ -f "$ASHLEY_VPN_RESOURCES/routing-service" ]]; then
+      _gp-ensure-routing-authorization || return
       "$gpRoutingHelper" start-system || return
-    elif [[ -f "$ASHLEY_VPN_RESOURCES/routing-service" ]]; then
-      print -u2 -- '安装级授权未完成，已停止重复请求密码。'
-      return 77
+    elif "$gpRoutingHelper" check >/dev/null 2>&1; then
+      "$gpRoutingHelper" start-system || return
     elif [[ "$ASHLEY_VPN_BACKGROUND" == 1 && ! -t 0 ]]; then
       _gp-terminal-input start-system || return
     else
@@ -120,6 +120,24 @@ gp-start() {
   return 1
 }
 
+_gp-ensure-routing-authorization() {
+  emulate -L zsh
+  local gpRoutingHelper=/Library/PrivilegedHelperTools/com.ashley.vpn.routing
+  local gpAppExecutable="${ASHLEY_VPN_RESOURCES:h}/MacOS/ashley-vpn-menu"
+  "$gpRoutingHelper" check >/dev/null 2>&1 && return 0
+  [[ "$ASHLEY_VPN_BACKGROUND" != 1 ]] || _gp-gui-progress '等待管理员授权，请在系统弹窗中完成验证'
+  print -r -- '安装授权未完成，正在请求本机管理员授权…'
+  if [[ ! -x "$gpAppExecutable" ]]; then
+    print -ru2 -- '缺少安装授权组件，请重新安装 Ashley VPN。'
+    return 77
+  fi
+  "$gpAppExecutable" --authorize-routing || return
+  if ! "$gpRoutingHelper" check >/dev/null 2>&1; then
+    print -ru2 -- '管理员验证后安装授权仍未就绪，本次操作已停止，请重试。'
+    return 77
+  fi
+}
+
 _gp-authorize-stop() {
   emulate -L zsh
   local gpInstaller="$ASHLEY_VPN_RESOURCES/setup-stop-authorization.sh"
@@ -136,12 +154,13 @@ _gp-stop-system-service() {
   local gpHelper=/private/etc/ashley-vpn-stop
   local gpRoutingHelper=/Library/PrivilegedHelperTools/com.ashley.vpn.routing
   local -a gpCommand=(/usr/bin/sudo -kn -- "$gpHelper")
-  if "$gpRoutingHelper" check >/dev/null 2>&1; then
+  if [[ -f "$ASHLEY_VPN_RESOURCES/routing-service" ]]; then
+    _gp-ensure-routing-authorization || return
     gpHelper=$gpRoutingHelper
     gpCommand=("$gpRoutingHelper")
-  elif [[ -f "$ASHLEY_VPN_RESOURCES/routing-service" ]]; then
-    print -u2 -- '安装级授权未完成，已停止重复请求密码。'
-    return 77
+  elif "$gpRoutingHelper" check >/dev/null 2>&1; then
+    gpHelper=$gpRoutingHelper
+    gpCommand=("$gpRoutingHelper")
   fi
 
   gpOutput=$(LC_ALL=C "${gpCommand[@]}" check 2>&1)
@@ -214,7 +233,7 @@ gp-stop() {
         "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => disabled'* &&
         "$gpSystemDisabled" != *'"com.paloaltonetworks.gp.pangpsd" => true'* ]] ||
      /bin/launchctl print "$gpSystemJob" >/dev/null 2>&1; then
-    _gp-stop-system-service "$gpSystemJob" || gpStopStatus=$?
+    _gp-stop-system-service "$gpSystemJob" || return
   fi
   _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangpa" || gpStopStatus=$?
   _gp-launchctl "$gpGui" disable "$gpGui/com.paloaltonetworks.gp.pangps" || gpStopStatus=$?
