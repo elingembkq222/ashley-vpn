@@ -36,10 +36,10 @@ final class TransparentRouting: NSObject, OSSystemExtensionRequestDelegate {
         return message
     }
 
-    func apply(_ selection: CodexProxyStatus.Selection?) async {
+    func apply(_ selection: CodexProxyStatus.Selection?, retryAuthorization: Bool = false) async {
         configured = false
         if usesDomainRules {
-            await applyDomainRules(selection)
+            await applyDomainRules(selection, retryAuthorization: retryAuthorization)
             return
         }
         do {
@@ -95,7 +95,7 @@ final class TransparentRouting: NSObject, OSSystemExtensionRequestDelegate {
         } catch { message = "未确认应用 · \(error.localizedDescription)" }
     }
 
-    private func applyDomainRules(_ selection: CodexProxyStatus.Selection?) async {
+    private func applyDomainRules(_ selection: CodexProxyStatus.Selection?, retryAuthorization: Bool) async {
         lastServices = DomainRouting.primaryServices()
         appliedScript = nil
         do {
@@ -104,7 +104,7 @@ final class TransparentRouting: NSObject, OSSystemExtensionRequestDelegate {
                     CodexProxyStatus.localProxyRoute(url)?.id == selection?.id ? url : nil
                 }
                 let script = try selection.map { _ in try DomainRouting.script(for: endpoint) }
-                try DomainRouting.apply(script)
+                try DomainRouting.apply(script, retryAuthorization: retryAuthorization)
                 return (script, endpoint != nil)
             }.value
             if let script, let selection {

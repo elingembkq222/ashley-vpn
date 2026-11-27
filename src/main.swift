@@ -315,7 +315,7 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
             defaults.removeObject(forKey: "codexRoute")
             selectedRoute = nil
         }
-        applyRoute()
+        applyRoute(retryAuthorization: true)
     }
 
     private var resolvedSelection: CodexProxyStatus.Selection? {
@@ -323,13 +323,13 @@ final class AshleyVPN: NSObject, NSApplicationDelegate {
         return CodexProxyStatus.Selection(route)
     }
 
-    private func applyRoute() {
+    private func applyRoute(retryAuthorization: Bool = false) {
         guard !switchingCodexRoute else { return }
         let requested = resolvedSelection
         switchingCodexRoute = true
         updateProxyMenu()
         Task {
-            await routing.apply(requested)
+            await routing.apply(requested, retryAuthorization: retryAuthorization)
             checkSelectedProxy()
             switchingCodexRoute = false
             codexRouteStatus = routing.status
@@ -572,6 +572,11 @@ struct Main {
     @MainActor
     static func main() {
         let arguments = CommandLine.arguments
+        if arguments == [arguments[0], "--authorize-routing"] {
+            do { try RoutingAuthorization.ensureAuthorized(retry: true) }
+            catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(77) }
+            return
+        }
         if arguments == [arguments[0], "--remove-domain-routing"] {
             do { try DomainRouting.apply(nil) }
             catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }
